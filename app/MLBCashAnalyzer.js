@@ -72,6 +72,62 @@ function TrendFlag({ player }) {
   return <span style={{ color: "#ef4444", fontWeight: 700 }}>⚠ DISCONNECT</span>;
 }
 
+const CSS = `
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid #1e1e1e;
+    border-radius: 6px;
+  }
+
+  .table-wrap table {
+    border-collapse: separate;
+    border-spacing: 0;
+    width: 100%;
+    min-width: 680px;
+    font-size: 12px;
+  }
+
+  .table-wrap th,
+  .table-wrap td {
+    padding: 10px 8px;
+    white-space: nowrap;
+  }
+
+  /* Sticky player column */
+  .table-wrap th.sticky-col,
+  .table-wrap td.sticky-col {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: #0a0a0a;
+    border-right: 1px solid #262626;
+  }
+
+  .table-wrap thead th.sticky-col {
+    z-index: 3;
+  }
+
+  .row-top3 td.sticky-col { background: #0d1f0d; }
+  .table-wrap tr:hover td.sticky-col { background: #1a1a1a !important; }
+
+  @media (max-width: 600px) {
+    .header-title { font-size: 20px !important; }
+    .header-sub { font-size: 11px !important; }
+    .header-wrap { padding: 16px 12px !important; }
+    .content-wrap { padding: 12px !important; }
+    .pos-tabs { gap: 2px !important; }
+    .pos-tabs button { padding: 5px 8px !important; font-size: 10px !important; }
+    .slate-btn-label { min-width: 60px !important; font-size: 10px !important; }
+    .slate-btn-meta { font-size: 10px !important; }
+    .slate-btn-time { display: none; }
+    .matchup-bar { font-size: 9px !important; }
+    .legend { font-size: 10px !important; }
+  }
+`;
+
 export default function MLBCashAnalyzer() {
   const [slates, setSlates] = useState([]);
   const [selectedSlate, setSelectedSlate] = useState(null);
@@ -81,7 +137,6 @@ export default function MLBCashAnalyzer() {
   const [error, setError] = useState(null);
   const [phase, setPhase] = useState("loading_slates");
 
-  // Fetch slates on mount
   useEffect(() => {
     setPhase("loading_slates");
     setError(null);
@@ -119,8 +174,7 @@ export default function MLBCashAnalyzer() {
       })
       .then((data) => {
         if (data.error) throw new Error(data.error);
-        const players = parseDFFAPI(data);
-        setParsed(players);
+        setParsed(parseDFFAPI(data));
         setPhase("ready");
       })
       .catch((err) => {
@@ -176,8 +230,10 @@ export default function MLBCashAnalyzer() {
       color: "#e5e5e5",
       fontFamily: "'JetBrains Mono', 'Fira Code', 'SF Mono', monospace",
     }}>
+      <style>{CSS}</style>
+
       {/* Header */}
-      <div style={{
+      <div className="header-wrap" style={{
         background: "linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #0a0a0a 100%)",
         borderBottom: "1px solid #262626",
         padding: "24px 20px",
@@ -193,13 +249,13 @@ export default function MLBCashAnalyzer() {
               color: "#22c55e", fontWeight: 600,
             }}>CASH GAME ANALYZER</span>
           </div>
-          <h1 style={{
+          <h1 className="header-title" style={{
             fontSize: 28, fontWeight: 800, margin: "8px 0 4px",
             background: "linear-gradient(90deg, #ffffff, #a3a3a3)",
             WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
             letterSpacing: -1,
           }}>MLB DFS · DraftKings</h1>
-          <p style={{ fontSize: 12, color: "#737373", margin: 0 }}>
+          <p className="header-sub" style={{ fontSize: 12, color: "#737373", margin: 0 }}>
             {phase === "ready" && selectedSlate
               ? `${selectedSlate.slate_type || "Main"} Slate · ${selectedSlate.game_count} games · ${selectedSlate.start_string}`
               : "Live projections → Top cash plays ranked by position"}
@@ -207,34 +263,27 @@ export default function MLBCashAnalyzer() {
         </div>
       </div>
 
-      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "20px" }}>
+      <div className="content-wrap" style={{ maxWidth: 1100, margin: "0 auto", padding: "20px" }}>
 
-        {/* Error */}
         {error && (
           <div style={{
             background: "#1a0a0a", border: "1px solid #4a1a1a",
             borderRadius: 8, padding: "16px 20px", marginBottom: 20,
             color: "#ef4444", fontSize: 13,
-          }}>
-            {error}
-          </div>
+          }}>{error}</div>
         )}
 
-        {/* Loading Slates */}
         {phase === "loading_slates" && (
           <div style={{ textAlign: "center", padding: 60, color: "#525252", fontSize: 13 }}>
             <div style={{
               width: 32, height: 32, border: "3px solid #262626",
               borderTopColor: "#22c55e", borderRadius: "50%",
-              margin: "0 auto 16px",
-              animation: "spin 0.8s linear infinite",
+              margin: "0 auto 16px", animation: "spin 0.8s linear infinite",
             }} />
-            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             Fetching today&apos;s slates...
           </div>
         )}
 
-        {/* Slate Selection */}
         {phase === "select_slate" && slates.length > 0 && (
           <div style={{
             border: "1px solid #262626", borderRadius: 8,
@@ -244,10 +293,9 @@ export default function MLBCashAnalyzer() {
               padding: "16px 20px", borderBottom: "1px solid #262626",
               background: "#0d0d0d",
             }}>
-              <span style={{
-                fontSize: 11, letterSpacing: 2,
-                color: "#525252", fontWeight: 700,
-              }}>SELECT A SLATE</span>
+              <span style={{ fontSize: 11, letterSpacing: 2, color: "#525252", fontWeight: 700 }}>
+                SELECT A SLATE
+              </span>
             </div>
             {slates.map((slate, i) => {
               const label = slate.slate_type || "Main";
@@ -269,18 +317,18 @@ export default function MLBCashAnalyzer() {
                   onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                    <span style={{
+                    <span className="slate-btn-label" style={{
                       background: label === "Main" ? "#22c55e" : "#262626",
                       color: label === "Main" ? "#000" : "#a3a3a3",
                       padding: "4px 12px", borderRadius: 4,
                       fontSize: 11, fontWeight: 800, letterSpacing: 1,
                       minWidth: 80, textAlign: "center",
                     }}>{label.toUpperCase()}</span>
-                    <span style={{ color: "#737373", fontSize: 12 }}>
+                    <span className="slate-btn-meta" style={{ color: "#737373", fontSize: 12 }}>
                       {slate.game_count} games · {slate.team_count} teams
                     </span>
                   </div>
-                  <span style={{ color: "#525252", fontSize: 11 }}>
+                  <span className="slate-btn-time" style={{ color: "#525252", fontSize: 11 }}>
                     {slate.start_string}
                   </span>
                 </button>
@@ -289,21 +337,17 @@ export default function MLBCashAnalyzer() {
           </div>
         )}
 
-        {/* Loading Players */}
         {phase === "loading_players" && (
           <div style={{ textAlign: "center", padding: 60, color: "#525252", fontSize: 13 }}>
             <div style={{
               width: 32, height: 32, border: "3px solid #262626",
               borderTopColor: "#22c55e", borderRadius: "50%",
-              margin: "0 auto 16px",
-              animation: "spin 0.8s linear infinite",
+              margin: "0 auto 16px", animation: "spin 0.8s linear infinite",
             }} />
-            <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
             Loading {selectedSlate?.slate_type || "Main"} slate projections...
           </div>
         )}
 
-        {/* Data View */}
         {phase === "ready" && (
           <>
             {/* Controls */}
@@ -312,7 +356,7 @@ export default function MLBCashAnalyzer() {
               alignItems: "center", marginBottom: 16,
               flexWrap: "wrap", gap: 12,
             }}>
-              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              <div className="pos-tabs" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                 {["ALL", ...POSITIONS].map((pos) => (
                   <button
                     key={pos}
@@ -349,7 +393,7 @@ export default function MLBCashAnalyzer() {
 
             {/* Matchup Bar */}
             {matchups.length > 0 && (
-              <div style={{
+              <div className="matchup-bar" style={{
                 display: "flex", gap: 8, flexWrap: "wrap",
                 marginBottom: 16, padding: "10px 14px",
                 background: "#111", border: "1px solid #1e1e1e",
@@ -363,13 +407,10 @@ export default function MLBCashAnalyzer() {
 
             {/* Stats Summary */}
             <div style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+              display: "grid", gridTemplateColumns: "1fr 1fr",
               gap: 8, marginBottom: 20,
             }}>
               {[
-                { label: "PLAYERS", val: scoredPlayers.length },
-                { label: "POSITIONS", val: POSITIONS.filter(p => positionCounts[p] > 0).length },
                 { label: "TOP PROJ", val: scoredPlayers[0]?.proj?.toFixed(1) || "—" },
                 { label: "BEST VALUE", val: scoredPlayers.reduce((best, p) => p.value > best ? p.value : best, 0).toFixed(2) + "x" },
               ].map((s) => (
@@ -384,17 +425,18 @@ export default function MLBCashAnalyzer() {
             </div>
 
             {/* Player Table */}
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <div className="table-wrap">
+              <table>
                 <thead>
                   <tr style={{ borderBottom: "2px solid #262626" }}>
-                    {["#", "PLAYER", "POS", "HAND", "SAL", "PROJ", "VAL", "SPREAD", "IMP TM", "TREND", "CASH SCORE"].map((h) => (
+                    <th className="sticky-col" style={{
+                      textAlign: "left", color: "#525252", fontWeight: 600,
+                      fontSize: 10, letterSpacing: 1.5,
+                    }}>PLAYER</th>
+                    {["POS", "HAND", "SAL", "PROJ", "VAL", "SPREAD", "IMP TM", "TREND", "CASH"].map((h) => (
                       <th key={h} style={{
-                        padding: "10px 8px",
-                        textAlign: h === "PLAYER" ? "left" : "center",
-                        color: "#525252", fontWeight: 600,
+                        textAlign: "center", color: "#525252", fontWeight: 600,
                         fontSize: 10, letterSpacing: 1.5,
-                        whiteSpace: "nowrap",
                       }}>{h}</th>
                     ))}
                   </tr>
@@ -403,18 +445,22 @@ export default function MLBCashAnalyzer() {
                   {displayPlayers.map((p, i) => {
                     const isTop3 = i < 3;
                     return (
-                      <tr key={`${p.name}-${i}`} style={{
-                        borderBottom: "1px solid #1a1a1a",
-                        background: isTop3 ? "#0d1f0d" : "transparent",
-                        transition: "background 0.15s",
-                      }}
+                      <tr
+                        key={`${p.name}-${i}`}
+                        className={isTop3 ? "row-top3" : ""}
+                        style={{
+                          borderBottom: "1px solid #1a1a1a",
+                          background: isTop3 ? "#0d1f0d" : "transparent",
+                          transition: "background 0.15s",
+                        }}
                         onMouseEnter={(e) => e.currentTarget.style.background = "#1a1a1a"}
                         onMouseLeave={(e) => e.currentTarget.style.background = isTop3 ? "#0d1f0d" : "transparent"}
                       >
-                        <td style={{ padding: "10px 8px", textAlign: "center", color: isTop3 ? "#22c55e" : "#525252", fontWeight: 800 }}>
-                          {i + 1}
-                        </td>
-                        <td style={{ padding: "10px 8px", fontWeight: 700, color: "#fff", whiteSpace: "nowrap" }}>
+                        <td className="sticky-col" style={{ fontWeight: 700, color: "#fff" }}>
+                          <span style={{
+                            color: isTop3 ? "#22c55e" : "#525252",
+                            fontWeight: 800, marginRight: 8, fontSize: 11,
+                          }}>{i + 1}</span>
                           {p.name}
                           <span style={{ color: "#525252", fontWeight: 400, marginLeft: 6, fontSize: 10 }}>
                             {p.team} {p.location} {p.opp}
@@ -427,48 +473,47 @@ export default function MLBCashAnalyzer() {
                             }}>{p.injury}</span>
                           )}
                         </td>
-                        <td style={{ padding: "10px 8px", textAlign: "center" }}>
+                        <td style={{ textAlign: "center" }}>
                           <span style={{
                             background: "#1a1a2e", padding: "2px 8px",
                             borderRadius: 3, fontSize: 10,
                             fontWeight: 700, color: "#818cf8",
                           }}>{p.posRaw}</span>
                         </td>
-                        <td style={{ padding: "10px 8px", textAlign: "center", color: "#525252", fontSize: 11 }}>
+                        <td style={{ textAlign: "center", color: "#525252", fontSize: 11 }}>
                           {p.hand || "—"}
                         </td>
-                        <td style={{ padding: "10px 8px", textAlign: "center", color: "#a3a3a3" }}>
+                        <td style={{ textAlign: "center", color: "#a3a3a3" }}>
                           ${(p.salary / 1000).toFixed(1)}k
                         </td>
-                        <td style={{ padding: "10px 8px", textAlign: "center", fontWeight: 700, color: "#fff" }}>
+                        <td style={{ textAlign: "center", fontWeight: 700, color: "#fff" }}>
                           {p.proj.toFixed(1)}
                         </td>
                         <td style={{
-                          padding: "10px 8px", textAlign: "center", fontWeight: 700,
+                          textAlign: "center", fontWeight: 700,
                           color: p.value >= 2.0 ? "#22c55e" : p.value >= 1.5 ? "#a3a3a3" : "#ef4444",
                         }}>
                           {p.value.toFixed(2)}x
                         </td>
                         <td style={{
-                          padding: "10px 8px", textAlign: "center", fontSize: 11,
+                          textAlign: "center", fontSize: 11,
                           color: p.spread.startsWith("-") ? "#22c55e" : "#a3a3a3",
                           fontWeight: p.spread.startsWith("-") ? 700 : 400,
                         }}>
                           {p.spread || "—"}
                         </td>
                         <td style={{
-                          padding: "10px 8px", textAlign: "center",
+                          textAlign: "center",
                           color: (p.tmPts || 0) >= 4.5 ? "#22c55e" : "#a3a3a3",
                           fontWeight: (p.tmPts || 0) >= 4.5 ? 700 : 400,
                         }}>
                           {p.tmPts !== null ? p.tmPts.toFixed(1) : "—"}
                         </td>
-                        <td style={{ padding: "10px 8px", textAlign: "center", fontSize: 11 }}>
+                        <td style={{ textAlign: "center", fontSize: 11 }}>
                           <TrendFlag player={p} />
                         </td>
                         <td style={{
-                          padding: "10px 8px", textAlign: "center",
-                          fontWeight: 800, fontSize: 14,
+                          textAlign: "center", fontWeight: 800, fontSize: 14,
                           color: isTop3 ? "#22c55e" : "#fff",
                         }}>
                           {p.cashScore.toFixed(1)}
@@ -498,20 +543,16 @@ export default function MLBCashAnalyzer() {
             )}
 
             {/* Legend */}
-            <div style={{
+            <div className="legend" style={{
               marginTop: 24, padding: "16px",
               background: "#111", border: "1px solid #1e1e1e",
               borderRadius: 6, fontSize: 11,
               color: "#525252", lineHeight: 1.8,
             }}>
-              <span style={{ color: "#737373", fontWeight: 700 }}>CASH SCORE FORMULA: </span>
-              Projection (40%) + Value (15%) + Batting Order (15%) + Implied Team Total (15%) + Trend Consistency (15%)
+              <span style={{ color: "#737373", fontWeight: 700 }}>CASH SCORE: </span>
+              Proj (40%) + Value (15%) + Order (15%) + Imp TM (15%) + Trend (15%)
               <br />
-              <span style={{ color: "#22c55e" }}>▲ HOT</span> = Recent avg above projection &nbsp;
-              <span style={{ color: "#f59e0b" }}>▼ COLD</span> = Below projection &nbsp;
-              <span style={{ color: "#ef4444" }}>⚠ DISCONNECT</span> = Major gap between projection and recent performance
-              <br />
-              <span style={{ color: "#22c55e" }}>Green rows</span> = Top 3 plays at position — your core cash targets
+              <span style={{ color: "#22c55e" }}>Green rows</span> = Top 3 plays at position
               <br />
               <span style={{ color: "#737373" }}>Projections update throughout the day</span>
             </div>
