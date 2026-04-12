@@ -167,14 +167,38 @@ export default function MLBCashAnalyzer() {
     setActivePos("ALL");
     setShowCount(5);
 
-    fetch(`/api/players?slate=${slate.url}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`Player fetch failed: ${r.status}`);
-        return r.json();
-      })
-      .then((data) => {
-        if (data.error) throw new Error(data.error);
-        setParsed(parseDFFAPI(data));
+    // Fetch DFF players and DK positions in parallel
+    const slateType = slate.slate_type || "Main";
+    const gameCount = slate.game_count || 0;
+
+    Promise.all([
+      fetch(`/api/players?slate=${slate.url}`)
+        .then((r) => {
+          if (!r.ok) throw new Error(`Player fetch failed: ${r.status}`);
+          return r.json();
+        }),
+      fetch(`/api/dkpositions?slateType=${encodeURIComponent(slateType === "" ? "Main" : slateType)}&gameCount=${gameCount}`)
+        .then((r) => r.json())
+        .catch(() => ({ positions: {} })),  // Don't fail if DK fetch fails
+    ])
+      .then(([dffData, dkData]) => {
+        if (dffData.error) throw new Error(dffData.error);
+
+        const dffPlayers = parseDFFAPI(dffData);
+        const dkPositions = dkData.positions || {};
+
+        // Merge: override DFF positions with DK positions where matched
+        const merged = dffPlayers.map((player) => {
+          const dkEntry = dkPositions[player.name];
+          if (dkEntry && dkEntry.position) {
+            const dkPos = dkEntry.position; // e.g. "1B/OF" or "SP"
+            const positions = dkPos.split("/").map((s) => s.trim().toUpperCase());
+            return { ...player, positions, posRaw: dkPos };
+          }
+          return player;
+        });
+
+        setParsed(merged);
         setPhase("ready");
       })
       .catch((err) => {
