@@ -42,390 +42,504 @@ const PARK_FACTORS = {
   "Estadio Alfredo Harp Helu": 1.12, "Truist Park": 0.99,
 };
 
-function getAbbrev(n) { return TEAM_ABBREVS[n] || n?.split(" ").pop()?.substring(0,3).toUpperCase() || "???"; }
-function getParkFactor(v) { if (!v) return 1; for (const [k,val] of Object.entries(PARK_FACTORS)) if (v.toLowerCase().includes(k.toLowerCase().substring(0,10))) return val; return 1; }
-
-const B = 0.735;
-function lo(p) { return Math.log(p/(1-p)); }
-function fl(x) { return 1/(1+Math.exp(-x)); }
-function bb(r,n,pr,w) { return n<2?pr:(r*n+pr*w)/(n+w); }
-function computeNRFI({ ap,hp,ab,hb,pf,sa,sh }) {
-  const blo=lo(B), apA=bb(ap,sa,B,2), hpA=bb(hp,sh,B,2), abA=bb(ab,20,B,3), hbA=bb(hb,20,B,3);
-  const tLO=blo+(lo(hpA)-blo)*.65+(lo(abA)-blo)*.35;
-  const bLO=blo+(lo(apA)-blo)*.65+(lo(hbA)-blo)*.35;
-  return Math.min(.88,Math.max(.32,fl(lo(fl(tLO))+lo(fl(bLO))-blo+(1-pf)*.6)));
+function getAbbrev(name) {
+  return TEAM_ABBREVS[name] || name?.split(" ").pop()?.substring(0, 3).toUpperCase() || "???";
 }
-function p2n(s) {
-  if (!s) return B;
-  const re=(s.era/9)*.9, kf=1-Math.min(.08,Math.max(-.04,(s.k9-8.5)*.015));
-  const bf=1+Math.max(0,(s.bb9-2.8)*.03), wf=1+Math.max(0,(s.whip-1.2)*.08);
-  return Math.min(.93,Math.max(.45,Math.exp(-re*kf*bf*wf)));
+function getParkFactor(venueName) {
+  if (!venueName) return 1.0;
+  for (const [key, val] of Object.entries(PARK_FACTORS)) {
+    if (venueName.toLowerCase().includes(key.toLowerCase().substring(0, 10))) return val;
+  }
+  return 1.0;
 }
 
-function getConf(n) {
-  if (n>=.68) return { t:"Strong", c:"#0f7b5f" };
-  if (n>=.58) return { t:"Lean", c:"#2d6a9f" };
-  if (n>=.50) return { t:"Toss-up", c:"#8a6d1b" };
-  return { t:"Fade", c:"#a63d3d" };
+// === MODEL v2 ===
+const HALF_INNING_NRFI_BASELINE = 0.735;
+function toLogOdds(p) { return Math.log(p / (1 - p)); }
+function fromLogOdds(lo) { return 1 / (1 + Math.exp(-lo)); }
+function bayesBlend(rate, n, prior, pw) { return n < 2 ? prior : (rate * n + prior * pw) / (n + pw); }
+
+function computeNRFI({ awayPitchNRFI, homePitchNRFI, awayBatNRFI, homeBatNRFI, parkFactor, sampleAway, sampleHome }) {
+  const B = HALF_INNING_NRFI_BASELINE, blo = toLogOdds(B);
+  const ap = bayesBlend(awayPitchNRFI, sampleAway, B, 2);
+  const hp = bayesBlend(homePitchNRFI, sampleHome, B, 2);
+  const ab = bayesBlend(awayBatNRFI, 20, B, 3);
+  const hb = bayesBlend(homeBatNRFI, 20, B, 3);
+  const topLO = blo + (toLogOdds(hp) - blo) * 0.65 + (toLogOdds(ab) - blo) * 0.35;
+  const botLO = blo + (toLogOdds(ap) - blo) * 0.65 + (toLogOdds(hb) - blo) * 0.35;
+  const ps = (1 - parkFactor) * 0.6;
+  return Math.min(0.88, Math.max(0.32, fromLogOdds(toLogOdds(fromLogOdds(topLO)) + toLogOdds(fromLogOdds(botLO)) - blo + ps)));
+}
+
+function getConfidence(nrfi) {
+  if (nrfi >= 0.68) return { label: "Strong", color: "#0d9255" };
+  if (nrfi >= 0.58) return { label: "Lean", color: "#2b7cc1" };
+  if (nrfi >= 0.50) return { label: "Toss-up", color: "#c08a18" };
+  return { label: "Fade", color: "#c43a3a" };
+}
+
+// Horizontal bar
+function ProbBar({ value, color }) {
+  return (
+    <div style={{ width: "100%", height: 6, borderRadius: 3, background: "#e8eef6", overflow: "hidden" }}>
+      <div style={{
+        height: "100%", borderRadius: 3, background: color,
+        width: `${value}%`, transition: "width 0.6s cubic-bezier(.4,0,.2,1)",
+      }} />
+    </div>
+  );
+}
+
+function StatLine({ label, value, detail }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "4px 0", borderBottom: "1px solid #f0f4f9" }}>
+      <span className="ie-stat-label">{label}</span>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        {detail && <span className="ie-stat-detail">{detail}</span>}
+        <span className="ie-stat-value">{value}</span>
+      </div>
+    </div>
+  );
 }
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Source+Sans+3:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,400&family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600&display=swap');
 
 :root {
-  --paper: #faf9f7;
   --white: #ffffff;
-  --rule: #e2ddd5;
-  --rule-light: #eee9e2;
-  --ink: #1a1a18;
-  --ink-2: #3d3b36;
-  --ink-3: #6b6760;
-  --ink-4: #9e9a92;
-  --ink-5: #c4c0b8;
-  --teal: #0f7b5f;
-  --teal-bg: #eef6f3;
-  --serif: 'Instrument Serif', Georgia, serif;
-  --sans: 'Source Sans 3', -apple-system, sans-serif;
-  --mono: 'IBM Plex Mono', monospace;
+  --powder: #f4f8fc;
+  --powder-mid: #e4edf7;
+  --powder-deep: #c9daf0;
+  --blue: #4a90c4;
+  --blue-dark: #2b5f8a;
+  --blue-deeper: #1a3d5c;
+  --ink: #1b2431;
+  --ink-light: #3d4f63;
+  --ink-muted: #7a8a9e;
+  --ink-faint: #a8b5c4;
+  --ink-ghost: #c8d1dc;
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'Outfit', -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
 }
 
-*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
-body { background: var(--paper); -webkit-font-smoothing: antialiased; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--powder); }
 
+@keyframes enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes liveDot { 0%,100% { opacity:1 } 50% { opacity:.25 } }
 
-/* Table */
-.ie-table { width:100%; border-collapse:collapse; }
-.ie-table th { text-align:left; font-family:var(--sans); font-size:10px; font-weight:600;
-  color:var(--ink-4); text-transform:uppercase; letter-spacing:.08em; padding:0 0 10px;
-  border-bottom:2px solid var(--ink); }
-.ie-table th:last-child, .ie-table td:last-child { text-align:right; }
-.ie-table td { padding:14px 0; border-bottom:1px solid var(--rule-light); vertical-align:top;
-  font-family:var(--sans); font-size:13px; color:var(--ink-2); }
-.ie-table tr { cursor:pointer; }
-.ie-table tr:hover td { background: rgba(0,0,0,.012); }
+/* Base classes */
+.ie-stat-label { font-size: 12px; color: var(--ink-muted); font-family: var(--font-body); }
+.ie-stat-value { font-size: 13px; font-weight: 600; color: var(--ink); font-family: var(--font-mono); }
+.ie-stat-detail { font-size: 10px; color: var(--ink-faint); font-family: var(--font-mono); }
 
-/* Responsive */
-.ie-head-right { display:flex; align-items:center; gap:14px; }
-.ie-kpi-row { display:flex; gap:0; border-bottom:2px solid var(--ink); }
-.ie-kpi { flex:1; padding:16px 0; }
-.ie-kpi + .ie-kpi { border-left:1px solid var(--rule); padding-left:24px; }
-.ie-detail-grid { display:grid; grid-template-columns:1fr 1fr; gap:32px; }
-.ie-hide-mobile { }
-.ie-venue-col { }
+.ie-stats-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+.ie-card-inner { padding: 20px; }
+.ie-card-main { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ie-matchup { display: flex; align-items: center; gap: 16px; flex: 1; min-width: 0; }
+.ie-team-col { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.ie-at { font-size: 12px; color: var(--ink-faint); font-weight: 500; font-family: var(--font-body); flex-shrink: 0; }
+.ie-p-name { font-size: 14px; font-weight: 500; color: var(--ink); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-body); }
+.ie-p-stats { font-size: 11px; color: var(--ink-muted); font-family: var(--font-mono); margin-top: 2px; }
+.ie-score-col { flex-shrink: 0; text-align: right; min-width: 72px; }
+.ie-meta-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--powder-mid); flex-wrap: wrap; }
+.ie-meta-item { font-size: 11px; color: var(--ink-faint); font-family: var(--font-body); }
+.ie-meta-mono { font-size: 10px; color: var(--ink-faint); font-family: var(--font-mono); }
+.ie-k9-group { display: contents; }
+.ie-expanded { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--powder-mid); }
+.ie-nav-date { font-size: 12px; color: var(--ink-muted); font-family: var(--font-body); }
+.ie-filter-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 
-@media (max-width:680px) {
-  .ie-head-right { gap:8px; }
-  .ie-head-right .ie-date { display:none; }
-  .ie-kpi-row { flex-direction:column; border-bottom:2px solid var(--ink); }
-  .ie-kpi + .ie-kpi { border-left:none; padding-left:0; border-top:1px solid var(--rule-light); }
-  .ie-kpi { padding:12px 0; }
-  .ie-hide-mobile { display:none !important; }
-  .ie-detail-grid { grid-template-columns:1fr; gap:20px; }
-  .ie-venue-col { display:none; }
-  .ie-table td, .ie-table th { font-size:12px; }
-  .ie-matchup-cell { min-width:0; }
-  .ie-prob-num { font-size:22px !important; }
+@media (max-width: 640px) {
+  .ie-stats-row { grid-template-columns: repeat(3,1fr); gap: 8px; }
+  .ie-stats-row > div { padding: 12px !important; }
+
+  .ie-card-inner { padding: 14px; }
+  .ie-card-main { flex-direction: column; gap: 12px; }
+  .ie-matchup { flex-direction: column; align-items: stretch; gap: 8px; }
+  .ie-at { display: none; }
+  .ie-team-col { width: 100%; }
+  .ie-score-col { display: flex; align-items: center; justify-content: space-between;
+    width: 100%; text-align: left; min-width: unset;
+    padding-top: 10px; border-top: 1px solid var(--powder-mid); }
+  .ie-p-name { font-size: 13px; }
+
+  .ie-meta-row { gap: 6px; }
+  .ie-k9-group { display: none; }
+  .ie-expanded { grid-template-columns: 1fr; gap: 16px; }
+  .ie-nav-date { display: none; }
+
+  .ie-filter-row { gap: 6px; }
+  .ie-filter-row button { padding: 6px 10px !important; font-size: 11px !important; }
 }
 
-@media (max-width:400px) {
-  .ie-kpi-row { flex-direction:column; }
+@media (max-width: 380px) {
+  .ie-stats-row { grid-template-columns: 1fr; gap: 6px; }
 }
 `;
 
 export default function NRFILive() {
-  const [games,setGames] = useState([]);
-  const [loading,setLoading] = useState(true);
-  const [error,setError] = useState(null);
-  const [sortBy,setSortBy] = useState("nrfi");
-  const [filter,setFilter] = useState("all");
-  const [expanded,setExpanded] = useState(null);
-  const [scanned,setScanned] = useState(0);
+  const [games, setGames] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [sortBy, setSortBy] = useState("nrfi");
+  const [filter, setFilter] = useState("all");
+  const [dataInfo, setDataInfo] = useState({ gamesScanned: 0 });
+  const [expandedGame, setExpandedGame] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
       setLoading(true); setError(null);
       const today = new Date().toISOString().split("T")[0];
-      const sched = await (await fetch(`${API_BASE}/schedule?date=${today}&sportId=1&hydrate=probablePitcher(note),linescore,venue`)).json();
-      const tg = sched.dates?.[0]?.games || [];
-      const ago = new Date(Date.now()-30*864e5).toISOString().split("T")[0];
-      const hist = await (await fetch(`${API_BASE}/schedule?startDate=${ago}&endDate=${today}&sportId=1&hydrate=linescore&gameType=R`)).json();
-      const ts = {}; let sc=0;
-      for (const d of hist.dates||[]) for (const g of d.games||[]) {
-        if (g.status?.detailedState!=="Final") continue;
-        const inn=g.linescore?.innings; if (!inn?.length) continue;
-        const ar=inn[0]?.away?.runs??null, hr=inn[0]?.home?.runs??null;
-        if (ar===null||hr===null) continue; sc++;
-        const aa=getAbbrev(g.teams?.away?.team?.name), ha=getAbbrev(g.teams?.home?.team?.name);
-        for (const [a,r] of [[aa,ar],[ha,hr]]) {
-          if (!ts[a]) ts[a]={bg:0,bn:0,pg:0,pn:0}; ts[a].bg++; if(r===0) ts[a].bn++;
+      const schedRes = await fetch(`${API_BASE}/schedule?date=${today}&sportId=1&hydrate=probablePitcher(note),linescore,venue`);
+      const schedData = await schedRes.json();
+      const todayGames = schedData.dates?.[0]?.games || [];
+      const thirtyAgo = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
+      const histRes = await fetch(`${API_BASE}/schedule?startDate=${thirtyAgo}&endDate=${today}&sportId=1&hydrate=linescore&gameType=R`);
+      const histData = await histRes.json();
+      const teamStats = {};
+      let gamesScanned = 0;
+      for (const d of histData.dates || []) for (const g of d.games || []) {
+        if (g.status?.detailedState !== "Final") continue;
+        const inn = g.linescore?.innings; if (!inn?.length) continue;
+        const ar = inn[0]?.away?.runs ?? null, hr = inn[0]?.home?.runs ?? null;
+        if (ar === null || hr === null) continue; gamesScanned++;
+        const aa = getAbbrev(g.teams?.away?.team?.name), ha = getAbbrev(g.teams?.home?.team?.name);
+        for (const [ab, r] of [[aa, ar], [ha, hr]]) {
+          if (!teamStats[ab]) teamStats[ab] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
+          teamStats[ab].batGames++; if (r === 0) teamStats[ab].batNRFI++;
         }
-        if (!ts[ha]) ts[ha]={bg:0,bn:0,pg:0,pn:0}; ts[ha].pg++; if(ar===0) ts[ha].pn++;
-        if (!ts[aa]) ts[aa]={bg:0,bn:0,pg:0,pn:0}; ts[aa].pg++; if(hr===0) ts[aa].pn++;
+        if (!teamStats[ha]) teamStats[ha] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
+        teamStats[ha].pitchGames++; if (ar === 0) teamStats[ha].pitchNRFI++;
+        if (!teamStats[aa]) teamStats[aa] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
+        teamStats[aa].pitchGames++; if (hr === 0) teamStats[aa].pitchNRFI++;
       }
-      const pids=new Set();
-      for (const g of tg) { if(g.teams?.away?.probablePitcher?.id) pids.add(g.teams.away.probablePitcher.id); if(g.teams?.home?.probablePitcher?.id) pids.add(g.teams.home.probablePitcher.id); }
-      const pm={};
-      await Promise.all([...pids].map(async id => {
+      const pids = new Set();
+      for (const g of todayGames) {
+        if (g.teams?.away?.probablePitcher?.id) pids.add(g.teams.away.probablePitcher.id);
+        if (g.teams?.home?.probablePitcher?.id) pids.add(g.teams.home.probablePitcher.id);
+      }
+      const pMap = {};
+      await Promise.all([...pids].map(async pid => {
         try {
-          const d=await(await fetch(`${API_BASE}/people/${id}/stats?stats=gameLog&group=pitching&season=2026&gameType=R`)).json();
-          const sp=d.stats?.[0]?.splits||[]; let er=0,ip=0,k=0,bw=0,h=0,st=0;
-          for(const s of sp){er+=s.stat?.earnedRuns||0;ip+=parseFloat(s.stat?.inningsPitched||0);k+=s.stat?.strikeOuts||0;bw+=s.stat?.baseOnBalls||0;h+=s.stat?.hits||0;st++;}
-          pm[id]={era:ip>0?(er*9)/ip:4.5,whip:ip>0?(bw+h)/ip:1.3,k9:ip>0?(k*9)/ip:7,bb9:ip>0?(bw*9)/ip:3,starts:st,ip};
-        } catch{pm[id]=null;}
+          const r = await fetch(`${API_BASE}/people/${pid}/stats?stats=gameLog&group=pitching&season=2026&gameType=R`);
+          const d = await r.json(); const sp = d.stats?.[0]?.splits || [];
+          let er = 0, ip = 0, k = 0, bb = 0, h = 0, st = 0;
+          for (const s of sp) { er += s.stat?.earnedRuns||0; ip += parseFloat(s.stat?.inningsPitched||0); k += s.stat?.strikeOuts||0; bb += s.stat?.baseOnBalls||0; h += s.stat?.hits||0; st++; }
+          pMap[pid] = { era: ip>0?(er*9)/ip:4.5, whip: ip>0?(bb+h)/ip:1.3, k9: ip>0?(k*9)/ip:7, bb9: ip>0?(bb*9)/ip:3, starts: st, ip };
+        } catch { pMap[pid] = null; }
       }));
-      const proc=tg.map(g=>{
-        const aa=getAbbrev(g.teams?.away?.team?.name||"TBD"), ha=getAbbrev(g.teams?.home?.team?.name||"TBD");
-        const ap=g.teams?.away?.probablePitcher, hp=g.teams?.home?.probablePitcher;
-        const v=g.venue?.name||"", pf=getParkFactor(v), st=g.status?.detailedState||"Scheduled";
-        let fir=null; if(g.linescore?.innings?.length>0){const f=g.linescore.innings[0];fir={a:f.away?.runs??"?",h:f.home?.runs??"?"};}
-        const aps=ap?.id?pm[ap.id]:null, hps=hp?.id?pm[hp.id]:null;
-        const atd=ts[aa]||{bg:0,bn:0,pg:0,pn:0}, htd=ts[ha]||{bg:0,bn:0,pg:0,pn:0};
-        const abn=atd.bg>0?atd.bn/atd.bg:.7, hbn=htd.bg>0?htd.bn/htd.bg:.7;
-        const apn=p2n(aps), hpn=p2n(hps);
-        const nrfi=computeNRFI({ap:apn,hp:hpn,ab:abn,hb:hbn,pf,sa:aps?.starts||0,sh:hps?.starts||0});
-        return { pk:g.gamePk, aa, ha, ap:ap?{name:ap.fullName,hand:ap.pitchHand?.code||"?",...aps}:null,
-          hp:hp?{name:hp.fullName,hand:hp.pitchHand?.code||"?",...hps}:null,
-          v, pf, time:new Date(g.gameDate).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:"America/New_York"}),
-          st, fir, nrfi, abn, hbn, apn, hpn, atd, htd };
+
+      const p2n = s => {
+        if (!s) return HALF_INNING_NRFI_BASELINE;
+        const re = (s.era / 9) * 0.9;
+        const kf = 1 - Math.min(0.08, Math.max(-0.04, (s.k9 - 8.5) * 0.015));
+        const bf = 1 + Math.max(0, (s.bb9 - 2.8) * 0.03);
+        const wf = 1 + Math.max(0, (s.whip - 1.2) * 0.08);
+        return Math.min(0.93, Math.max(0.45, Math.exp(-re * kf * bf * wf)));
+      };
+
+      const processed = todayGames.map(g => {
+        const aa = getAbbrev(g.teams?.away?.team?.name || "TBD");
+        const ha = getAbbrev(g.teams?.home?.team?.name || "TBD");
+        const ap = g.teams?.away?.probablePitcher, hp = g.teams?.home?.probablePitcher;
+        const v = g.venue?.name || "", pf = getParkFactor(v);
+        const st = g.status?.detailedState || "Scheduled";
+        let fir = null;
+        if (g.linescore?.innings?.length > 0) { const fi = g.linescore.innings[0]; fir = { awayRuns: fi.away?.runs ?? "?", homeRuns: fi.home?.runs ?? "?" }; }
+        const aps = ap?.id ? pMap[ap.id] : null, hps = hp?.id ? pMap[hp.id] : null;
+        const atd = teamStats[aa] || { batGames:0,batNRFI:0,pitchGames:0,pitchNRFI:0 };
+        const htd = teamStats[ha] || { batGames:0,batNRFI:0,pitchGames:0,pitchNRFI:0 };
+        const abn = atd.batGames > 0 ? atd.batNRFI/atd.batGames : 0.7;
+        const hbn = htd.batGames > 0 ? htd.batNRFI/htd.batGames : 0.7;
+        const apn = p2n(aps), hpn = p2n(hps);
+        const nrfi = computeNRFI({ awayPitchNRFI:apn, homePitchNRFI:hpn, awayBatNRFI:abn, homeBatNRFI:hbn, parkFactor:pf, sampleAway:aps?.starts||0, sampleHome:hps?.starts||0 });
+        return {
+          gamePk: g.gamePk, awayAbbr: aa, homeAbbr: ha,
+          awayP: ap ? { name: ap.fullName, hand: ap.pitchHand?.code||"?", ...aps } : null,
+          homeP: hp ? { name: hp.fullName, hand: hp.pitchHand?.code||"?", ...hps } : null,
+          venue: v, parkFactor: pf,
+          time: new Date(g.gameDate).toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit", timeZone:"America/New_York" }),
+          status: st, firstInningResult: fir, nrfi, awayBatNRFI: abn, homeBatNRFI: hbn, awayPitchNRFI: apn, homePitchNRFI: hpn, awayTeamData: atd, homeTeamData: htd,
+        };
       });
-      setGames(proc); setScanned(sc); setLoading(false);
-    } catch(e){setError(e.message);setLoading(false);}
-  },[]);
+      setGames(processed);
+      setDataInfo({ gamesScanned });
+      setLoading(false);
+    } catch (e) { setError(e.message); setLoading(false); }
+  }, []);
 
-  useEffect(()=>{fetchData();},[fetchData]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  const sorted=(()=>{
-    let a=[...games];
-    if(filter==="strong") a=a.filter(g=>g.nrfi>=.60);
-    if(filter==="upcoming") a=a.filter(g=>g.st==="Scheduled"||g.st==="Pre-Game");
-    if(filter==="live") a=a.filter(g=>g.st.includes("Progress"));
-    if(sortBy==="nrfi") a.sort((x,y)=>y.nrfi-x.nrfi);
-    else a.sort((x,y)=>new Date(x.time)-new Date(y.time));
+  const sorted = (() => {
+    let a = [...games];
+    if (filter === "strong") a = a.filter(g => g.nrfi >= 0.60);
+    if (filter === "upcoming") a = a.filter(g => g.status === "Scheduled" || g.status === "Pre-Game");
+    if (filter === "live") a = a.filter(g => g.status.includes("Progress"));
+    if (sortBy === "nrfi") a.sort((x, y) => y.nrfi - x.nrfi);
+    else a.sort((x, y) => new Date(x.time) - new Date(y.time));
     return a;
   })();
 
-  const avg=games.length?(games.reduce((s,g)=>s+g.nrfi,0)/games.length*100).toFixed(1):"—";
-  const best=games.length?games.reduce((a,b)=>a.nrfi>b.nrfi?a:b):null;
-  const strong=games.filter(g=>g.nrfi>=.60).length;
-  const dayStr=new Date().toLocaleDateString("en-US",{weekday:"long",month:"long",day:"numeric",year:"numeric"});
+  const avgNRFI = games.length ? (games.reduce((s, g) => s + g.nrfi, 0) / games.length * 100).toFixed(1) : "—";
+  const best = games.length ? games.reduce((a, b) => a.nrfi > b.nrfi ? a : b) : null;
+  const strong = games.filter(g => g.nrfi >= 0.60).length;
+  const todayStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
-  const shell={minHeight:"100vh",fontFamily:"var(--sans)",color:"var(--ink)"};
+  const shell = { minHeight: "100vh", fontFamily: "var(--font-body)", WebkitFontSmoothing: "antialiased" };
 
-  if(loading) return (<><style>{CSS}</style>
-    <div style={{...shell,background:"var(--paper)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{textAlign:"center"}}>
-        <div style={{width:24,height:24,border:"2px solid var(--rule)",borderTopColor:"var(--teal)",borderRadius:"50%",animation:"spin .7s linear infinite",margin:"0 auto 16px"}}/>
-        <div style={{fontSize:14,color:"var(--ink-2)",fontFamily:"var(--sans)"}}>Loading today's slate…</div>
+  if (loading) return (
+    <><style>{CSS}</style>
+    <div style={{ ...shell, background: "var(--powder)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ width: 32, height: 32, border: "2.5px solid var(--powder-deep)", borderTopColor: "var(--blue)", borderRadius: "50%", animation: "spin 0.7s linear infinite", margin: "0 auto 20px" }} />
+        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", fontFamily: "var(--font-display)" }}>Loading today's slate</div>
+        <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 4 }}>Pulling pitcher logs & first-inning data</div>
       </div>
-    </div></>);
-
-  if(error) return (<><style>{CSS}</style>
-    <div style={{...shell,background:"var(--paper)",display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{textAlign:"center",maxWidth:320}}>
-        <div style={{fontSize:14,color:"var(--ink)",marginBottom:8}}>Unable to load data</div>
-        <div style={{fontSize:13,color:"var(--ink-3)",marginBottom:20,lineHeight:1.6}}>{error}</div>
-        <button onClick={fetchData} style={{background:"var(--ink)",border:"none",color:"var(--paper)",padding:"10px 28px",fontSize:13,cursor:"pointer",fontFamily:"var(--sans)",fontWeight:500}}>Retry</button>
-      </div>
-    </div></>);
-
-  const filterBtn=(key,label)=>(
-    <button key={key} onClick={()=>setFilter(key)} style={{
-      background:"none", border:"none", cursor:"pointer", fontFamily:"var(--sans)",
-      fontSize:13, fontWeight: filter===key?600:400,
-      color: filter===key?"var(--ink)":"var(--ink-4)",
-      borderBottom: filter===key?"2px solid var(--ink)":"2px solid transparent",
-      padding:"6px 0", marginRight:20,
-    }}>{label}</button>
+    </div></>
   );
 
-  return (<><style>{CSS}</style>
-  <div style={{...shell,background:"var(--paper)"}}>
+  if (error) return (
+    <><style>{CSS}</style>
+    <div style={{ ...shell, background: "var(--powder)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ textAlign: "center", maxWidth: 340, padding: "0 24px" }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", fontFamily: "var(--font-display)", marginBottom: 8 }}>Couldn't load data</div>
+        <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 20, lineHeight: 1.6 }}>{error}</div>
+        <button onClick={fetchData} style={{
+          background: "var(--blue)", border: "none", color: "#fff", padding: "10px 28px",
+          borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "var(--font-body)",
+        }}>Try again</button>
+      </div>
+    </div></>
+  );
 
-    {/* Masthead */}
-    <header style={{borderBottom:"1px solid var(--rule)",background:"var(--white)"}}>
-      <div style={{maxWidth:900,margin:"0 auto",padding:"16px 20px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-        <div>
-          <div style={{fontFamily:"var(--serif)",fontSize:26,fontWeight:400,color:"var(--ink)",lineHeight:1,letterSpacing:"-0.01em"}}>
-            InningEdge
-          </div>
+  return (
+    <><style>{CSS}</style>
+    <div style={{ ...shell, background: "var(--powder)", color: "var(--ink)" }}>
+
+      {/* Nav */}
+      <nav style={{
+        background: "var(--white)", borderBottom: "1px solid var(--powder-mid)",
+        padding: "0 24px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between",
+        position: "sticky", top: 0, zIndex: 100,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{
+            width: 30, height: 30, borderRadius: 8, background: "var(--blue)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontFamily: "var(--font-display)", fontSize: 13, fontWeight: 700, color: "#fff",
+            letterSpacing: "-0.02em",
+          }}>ie</div>
+          <span style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 700, color: "var(--ink)", letterSpacing: "-0.03em" }}>
+            Inning<span style={{ color: "var(--blue)" }}>Edge</span>
+          </span>
         </div>
-        <div className="ie-head-right">
-          <span className="ie-date" style={{fontSize:12,color:"var(--ink-4)",fontFamily:"var(--sans)"}}>{dayStr}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <span className="ie-nav-date">{todayStr}</span>
           <button onClick={fetchData} style={{
-            background:"none",border:"1px solid var(--rule)",color:"var(--ink-3)",
-            padding:"6px 16px",fontSize:12,cursor:"pointer",fontFamily:"var(--sans)",fontWeight:500,
+            background: "var(--powder)", border: "1px solid var(--powder-mid)", color: "var(--ink-light)",
+            padding: "7px 14px", borderRadius: 8, fontSize: 12, cursor: "pointer",
+            fontFamily: "var(--font-body)", fontWeight: 500,
           }}>Refresh</button>
         </div>
-      </div>
-    </header>
+      </nav>
 
-    <div style={{maxWidth:900,margin:"0 auto",padding:"24px 20px 80px"}}>
+      <div style={{ maxWidth: 840, margin: "0 auto", padding: "24px 16px 80px" }}>
 
-      {/* KPIs */}
-      <div className="ie-kpi-row" style={{marginBottom:28}}>
-        {[
-          {l:"Average",v:`${avg}%`,s:`${games.length} games today`},
-          {l:"Best Play",v:best?`${(best.nrfi*100).toFixed(1)}%`:"—",s:best?`${best.aa} at ${best.ha}`:""},
-          {l:"Strong Plays",v:String(strong),s:"60%+ probability"},
-        ].map((k,i)=>(
-          <div key={i} className="ie-kpi">
-            <div style={{fontSize:11,color:"var(--ink-4)",fontFamily:"var(--sans)",fontWeight:500,textTransform:"uppercase",letterSpacing:".06em",marginBottom:4}}>{k.l}</div>
-            <div style={{fontSize:32,fontFamily:"var(--serif)",fontWeight:400,color:"var(--ink)",lineHeight:1,letterSpacing:"-0.02em"}}>{k.v}</div>
-            <div style={{fontSize:12,color:"var(--ink-4)",marginTop:4}}>{k.s}</div>
+        {/* Stat cards */}
+        <div className="ie-stats-row" style={{ marginBottom: 24 }}>
+          {[
+            { label: "Avg Probability", val: `${avgNRFI}%`, sub: `across ${games.length} games` },
+            { label: "Best Play", val: best ? `${(best.nrfi*100).toFixed(1)}%` : "—", sub: best ? `${best.awayAbbr} @ ${best.homeAbbr}` : "" },
+            { label: "Strong Plays", val: String(strong), sub: "≥ 60% NRFI" },
+          ].map((s, i) => (
+            <div key={i} style={{
+              background: "var(--white)", borderRadius: 12, padding: "18px 20px",
+              border: "1px solid var(--powder-mid)",
+              animation: `enter 0.35s ease ${i * 0.06}s both`,
+            }}>
+              <div style={{ fontSize: 11, color: "var(--ink-faint)", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>{s.label}</div>
+              <div className="ie-stat-val" style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.03em", lineHeight: 1, fontFamily: "var(--font-display)", color: "var(--ink)" }}>{s.val}</div>
+              <div style={{ fontSize: 11, color: "var(--ink-faint)", marginTop: 6, fontFamily: "var(--font-body)" }}>{s.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Filters */}
+        <div className="ie-filter-row" style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 4, background: "var(--white)", borderRadius: 10, padding: 4, border: "1px solid var(--powder-mid)" }}>
+            {[{ key: "all", l: "All" }, { key: "strong", l: "Strong" }, { key: "upcoming", l: "Upcoming" }, { key: "live", l: "Live" }].map(f => (
+              <button key={f.key} onClick={() => setFilter(f.key)} style={{
+                background: filter === f.key ? "var(--powder)" : "transparent",
+                border: "none", color: filter === f.key ? "var(--ink)" : "var(--ink-faint)",
+                padding: "7px 16px", borderRadius: 7, fontSize: 12, cursor: "pointer",
+                fontWeight: filter === f.key ? 600 : 400, fontFamily: "var(--font-body)",
+              }}>
+                {f.key === "live" && <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "#d93636", marginRight: 6, animation: "pulse 2s infinite" }} />}
+                {f.l}
+              </button>
+            ))}
           </div>
-        ))}
-      </div>
-
-      {/* Filters */}
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:8}}>
-        <div>
-          {filterBtn("all","All Games")}
-          {filterBtn("strong","Strong")}
-          {filterBtn("upcoming","Upcoming")}
-          {filterBtn("live","Live")}
+          <button onClick={() => setSortBy(sortBy === "nrfi" ? "time" : "nrfi")} style={{
+            background: "var(--white)", border: "1px solid var(--powder-mid)", color: "var(--ink-muted)",
+            padding: "7px 16px", borderRadius: 8, fontSize: 12, cursor: "pointer",
+            fontFamily: "var(--font-body)", fontWeight: 500,
+          }}>Sort: {sortBy === "nrfi" ? "Probability" : "Game Time"}</button>
         </div>
-        <button onClick={()=>setSortBy(sortBy==="nrfi"?"time":"nrfi")} style={{
-          background:"none",border:"none",cursor:"pointer",fontFamily:"var(--sans)",
-          fontSize:12,color:"var(--ink-4)",fontWeight:500,
-        }}>Sort by {sortBy==="nrfi"?"probability":"time"} ↓</button>
-      </div>
 
-      {/* Table */}
-      {sorted.length===0?(
-        <div style={{textAlign:"center",padding:"48px 20px",color:"var(--ink-4)",fontSize:13}}>
-          No games match this filter.
-        </div>
-      ):(
-        <table className="ie-table">
-          <thead>
-            <tr>
-              <th style={{width:"40%"}}>Matchup</th>
-              <th className="ie-venue-col">Venue</th>
-              <th className="ie-hide-mobile">Status</th>
-              <th style={{width:"120px"}}>NRFI Prob.</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map(g=>{
-              const conf=getConf(g.nrfi);
-              const pct=(g.nrfi*100).toFixed(1);
-              const isLive=g.st.includes("Progress");
-              const isFinal=g.st==="Final";
-              const exp=expanded===g.pk;
-              let res=null;
-              if(isFinal&&g.fir){const hit=g.fir.a===0&&g.fir.h===0; res={t:hit?"NRFI":"YRFI",hit};}
+        {/* Empty */}
+        {sorted.length === 0 && (
+          <div style={{ textAlign: "center", padding: "56px 20px", color: "var(--ink-faint)", fontSize: 13, borderRadius: 12, border: "1px dashed var(--powder-deep)", background: "var(--white)" }}>
+            No games match this filter.
+          </div>
+        )}
 
-              return (
-                <tr key={g.pk} onClick={()=>setExpanded(exp?null:g.pk)} style={{background:exp?"rgba(15,123,95,0.02)":"transparent"}}>
+        {/* Game cards */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {sorted.map((game, idx) => {
+            const conf = getConfidence(game.nrfi);
+            const pct = (game.nrfi * 100).toFixed(1);
+            const isLive = game.status.includes("Progress");
+            const isFinal = game.status === "Final";
+            const expanded = expandedGame === game.gamePk;
 
-                  {/* Matchup cell */}
-                  <td className="ie-matchup-cell" style={{paddingRight:12}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6}}>
-                      <span style={{fontFamily:"var(--mono)",fontSize:12,fontWeight:500,color:TEAM_COLORS[g.aa]||"var(--ink)",minWidth:28}}>{g.aa}</span>
-                      <span style={{color:"var(--ink-5)",fontSize:11}}>at</span>
-                      <span style={{fontFamily:"var(--mono)",fontSize:12,fontWeight:500,color:TEAM_COLORS[g.ha]||"var(--ink)",minWidth:28}}>{g.ha}</span>
-                    </div>
-                    <div style={{marginTop:4,display:"flex",gap:16}}>
-                      <span style={{fontSize:12,color:"var(--ink-3)"}}>{g.ap?.name||"TBD"}</span>
-                      <span style={{fontSize:12,color:"var(--ink-5)"}}>vs</span>
-                      <span style={{fontSize:12,color:"var(--ink-3)"}}>{g.hp?.name||"TBD"}</span>
-                    </div>
-                    {g.ap&&g.hp&&(
-                      <div style={{marginTop:3,fontSize:11,color:"var(--ink-4)",fontFamily:"var(--mono)"}}>
-                        {g.ap.era?.toFixed(2)}/{g.ap.whip?.toFixed(2)} — {g.hp.era?.toFixed(2)}/{g.hp.whip?.toFixed(2)}
-                        <span style={{color:"var(--ink-5)",marginLeft:6,fontSize:10}}>ERA/WHIP</span>
-                      </div>
-                    )}
+            let resultTag = null;
+            if (isFinal && game.firstInningResult) {
+              const hit = game.firstInningResult.awayRuns === 0 && game.firstInningResult.homeRuns === 0;
+              resultTag = { text: hit ? "NRFI" : "YRFI", hit };
+            }
 
-                    {/* Expanded detail */}
-                    {exp&&(
-                      <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid var(--rule-light)"}}>
-                        <div className="ie-detail-grid">
-                          {[
-                            {abbr:g.aa,side:"Away",pn:g.apn,bn:g.abn,td:g.atd,p:g.ap},
-                            {abbr:g.ha,side:"Home",pn:g.hpn,bn:g.hbn,td:g.htd,p:g.hp},
-                          ].map(t=>(
-                            <div key={t.side}>
-                              <div style={{fontSize:11,fontWeight:600,color:"var(--ink-3)",textTransform:"uppercase",letterSpacing:".06em",marginBottom:8,fontFamily:"var(--sans)"}}>{t.abbr} — {t.side}</div>
-                              <table style={{width:"100%",borderCollapse:"collapse"}}>
-                                <tbody>
-                                  {[
-                                    ["Hold Rate",`${(t.pn*100).toFixed(1)}%`],
-                                    ["Bat NRFI",`${(t.bn*100).toFixed(1)}%`,`${t.td.bn}/${t.td.bg}`],
-                                    ...(t.p?[
-                                      ["Starts",t.p.starts||0],
-                                      ["IP",t.p.ip?.toFixed(1)||"—"],
-                                      ["K/9",t.p.k9?.toFixed(1)||"—"],
-                                      ["BB/9",t.p.bb9?.toFixed(1)||"—"],
-                                    ]:[]),
-                                  ].map(([label,val,extra],i)=>(
-                                    <tr key={i}>
-                                      <td style={{fontSize:12,color:"var(--ink-4)",padding:"3px 0",fontFamily:"var(--sans)",border:"none"}}>{label}</td>
-                                      <td style={{fontSize:12,color:"var(--ink-2)",padding:"3px 0",textAlign:"right",fontFamily:"var(--mono)",fontWeight:500,border:"none"}}>
-                                        {val}
-                                        {extra&&<span style={{color:"var(--ink-5)",fontSize:10,marginLeft:6}}>{extra}</span>}
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          ))}
-                        </div>
-                        <div style={{marginTop:12,fontSize:11,color:"var(--ink-5)",fontFamily:"var(--mono)"}}>
-                          Park factor {g.pf.toFixed(2)} · {g.pf>1.03?"hitter-friendly":g.pf<.97?"pitcher-friendly":"neutral"}
+            return (
+              <div key={game.gamePk} style={{
+                background: "var(--white)", border: `1px solid ${expanded ? "var(--powder-deep)" : "var(--powder-mid)"}`,
+                borderRadius: 14, overflow: "hidden", cursor: "pointer",
+                transition: "border-color 0.2s, box-shadow 0.2s",
+                boxShadow: expanded ? "0 2px 12px rgba(74,144,196,0.08)" : "0 1px 3px rgba(0,0,0,0.03)",
+                animation: `enter 0.3s ease ${idx * 0.03}s both`,
+              }}
+              onClick={() => setExpandedGame(expanded ? null : game.gamePk)}
+              >
+                <div className="ie-card-inner">
+                  <div className="ie-card-main">
+                    {/* Teams */}
+                    <div className="ie-matchup">
+                      <div className="ie-team-col">
+                        <div style={{
+                          width: 34, height: 34, borderRadius: 8, flexShrink: 0,
+                          background: TEAM_COLORS[game.awayAbbr] || "#6b7280",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 10, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
+                          letterSpacing: "-0.02em",
+                        }}>{game.awayAbbr}</div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div className="ie-p-name">{game.awayP?.name || "TBD"}</div>
+                          {game.awayP && <div className="ie-p-stats">{game.awayP.era?.toFixed(2)} ERA · {game.awayP.whip?.toFixed(2)} WHIP</div>}
                         </div>
                       </div>
-                    )}
-                  </td>
 
-                  {/* Venue */}
-                  <td className="ie-venue-col" style={{fontSize:12,color:"var(--ink-4)",paddingRight:12}}>
-                    {g.v}
-                    <div style={{fontSize:11,color:"var(--ink-5)",fontFamily:"var(--mono)",marginTop:2}}>PF {g.pf.toFixed(2)}</div>
-                  </td>
+                      <span className="ie-at">at</span>
 
-                  {/* Status */}
-                  <td className="ie-hide-mobile" style={{fontSize:12}}>
-                    <span style={{
-                      color:isLive?"#b91c1c":isFinal?"var(--ink-4)":"var(--ink-3)",
-                      fontFamily:"var(--mono)",fontSize:11,fontWeight:500,
-                    }}>
-                      {isLive&&<span style={{display:"inline-block",width:5,height:5,borderRadius:"50%",background:"#b91c1c",marginRight:5,animation:"liveDot 2s infinite"}}/>}
-                      {isLive?"Live":isFinal?"Final":g.time+" ET"}
+                      <div className="ie-team-col">
+                        <div style={{
+                          width: 34, height: 34, borderRadius: 8, flexShrink: 0,
+                          background: TEAM_COLORS[game.homeAbbr] || "#6b7280",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 10, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
+                          letterSpacing: "-0.02em",
+                        }}>{game.homeAbbr}</div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div className="ie-p-name">{game.homeP?.name || "TBD"}</div>
+                          {game.homeP && <div className="ie-p-stats">{game.homeP.era?.toFixed(2)} ERA · {game.homeP.whip?.toFixed(2)} WHIP</div>}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Score column */}
+                    <div className="ie-score-col">
+                      <div>
+                        <span style={{
+                          fontSize: 10, fontWeight: 500, fontFamily: "var(--font-mono)",
+                          color: isLive ? "#d93636" : isFinal ? "var(--ink-faint)" : "var(--ink-muted)",
+                          animation: isLive ? "pulse 2s infinite" : "none",
+                        }}>
+                          {isLive ? "● LIVE" : isFinal ? "FINAL" : game.time + " ET"}
+                        </span>
+                        {resultTag && (
+                          <div style={{
+                            fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)", marginTop: 2,
+                            color: resultTag.hit ? "#0d9255" : "#c43a3a",
+                          }}>
+                            {resultTag.text} {game.firstInningResult.awayRuns}-{game.firstInningResult.homeRuns}
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ fontSize: 26, fontWeight: 800, color: conf.color, lineHeight: 1, fontFamily: "var(--font-display)", letterSpacing: "-0.02em" }}>
+                          {pct}<span style={{ fontSize: 14, fontWeight: 600 }}>%</span>
+                        </div>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: conf.color, marginTop: 2, fontFamily: "var(--font-mono)", letterSpacing: "0.04em" }}>
+                          {conf.label}
+                        </div>
+                        <div style={{ marginTop: 6, width: 72 }}>
+                          <ProbBar value={parseFloat(pct)} color={conf.color} />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Meta */}
+                  <div className="ie-meta-row">
+                    <span className="ie-meta-item">{game.venue}</span>
+                    <span className="ie-meta-item">·</span>
+                    <span className="ie-meta-mono">PF {game.parkFactor.toFixed(2)}</span>
+                    <div style={{ flex: 1 }} />
+                    <span className="ie-k9-group">
+                      {game.awayP && <span className="ie-meta-mono">{game.awayP.k9?.toFixed(1)} K/9</span>}
+                      {game.awayP && game.homeP && <span className="ie-meta-item" style={{ margin: "0 3px" }}>·</span>}
+                      {game.homeP && <span className="ie-meta-mono">{game.homeP.k9?.toFixed(1)} K/9</span>}
                     </span>
-                    {res&&(
-                      <div style={{fontSize:11,fontWeight:600,fontFamily:"var(--mono)",marginTop:2,color:res.hit?"var(--teal)":"#a63d3d"}}>
-                        {res.t} {g.fir.a}-{g.fir.h}
-                      </div>
-                    )}
-                  </td>
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--ink-faint)" strokeWidth="1.5"
+                      style={{ transform: expanded ? "rotate(180deg)" : "rotate(0)", transition: "transform 0.2s" }}>
+                      <path d="M2 4l3 3 3-3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
 
-                  {/* Probability */}
-                  <td>
-                    {/* Mobile: show time here since status col is hidden */}
-                    <div className="ie-hide-desktop" style={{display:"none"}}>
-                      <span style={{fontSize:10,color:"var(--ink-4)",fontFamily:"var(--mono)"}}>{g.time} ET</span>
+                  {/* Expanded */}
+                  {expanded && (
+                    <div className="ie-expanded">
+                      {[
+                        { abbr: game.awayAbbr, side: "Away", pn: game.awayPitchNRFI, bn: game.awayBatNRFI, td: game.awayTeamData, p: game.awayP },
+                        { abbr: game.homeAbbr, side: "Home", pn: game.homePitchNRFI, bn: game.homeBatNRFI, td: game.homeTeamData, p: game.homeP },
+                      ].map(t => (
+                        <div key={t.side}>
+                          <div style={{
+                            fontSize: 11, fontWeight: 600, color: "var(--blue-dark)",
+                            letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 10,
+                            fontFamily: "var(--font-body)",
+                          }}>{t.abbr} — {t.side}</div>
+                          <StatLine label="Pitch Hold Rate" value={`${(t.pn*100).toFixed(1)}%`} />
+                          <StatLine label="Batting NRFI" value={`${(t.bn*100).toFixed(1)}%`} detail={`${t.td.batNRFI}/${t.td.batGames}`} />
+                          {t.p && <>
+                            <StatLine label="Starts" value={t.p.starts||0} />
+                            <StatLine label="IP" value={t.p.ip?.toFixed(1)||"—"} />
+                            <StatLine label="BB/9" value={t.p.bb9?.toFixed(1)||"—"} />
+                            <StatLine label="K/9" value={t.p.k9?.toFixed(1)||"—"} />
+                          </>}
+                        </div>
+                      ))}
                     </div>
-                    <div className="ie-prob-num" style={{fontSize:28,fontFamily:"var(--serif)",fontWeight:400,color:conf.c,lineHeight:1,letterSpacing:"-0.02em",textAlign:"right"}}>
-                      {pct}<span style={{fontSize:14}}>%</span>
-                    </div>
-                    <div style={{fontSize:10,color:conf.c,textAlign:"right",fontFamily:"var(--sans)",fontWeight:600,marginTop:2,letterSpacing:".03em"}}>
-                      {conf.t}
-                    </div>
-                    {/* Thin bar */}
-                    <div style={{marginTop:6,height:3,background:"var(--rule-light)",overflow:"hidden"}}>
-                      <div style={{height:"100%",background:conf.c,width:`${pct}%`,transition:"width .5s ease",opacity:.6}}/>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-    </div>
-  </div></>);
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div></>
+  );
 }
