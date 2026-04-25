@@ -27,7 +27,6 @@ const TEAM_COLORS = {
   TOR: "#134A8E", WSH: "#AB0003",
 };
 
-// Known park factors (Statcast 2024-2025 avg)
 const PARK_FACTORS = {
   "Coors Field": 1.38, "Great American Ball Park": 1.15, "Globe Life Field": 1.04,
   "Fenway Park": 1.08, "Wrigley Field": 1.05, "Citizens Bank Park": 1.06,
@@ -56,71 +55,97 @@ function getParkFactor(venueName) {
 }
 
 // === NRFI MODEL v2 ===
-// League-average probability of scoring 0 runs in a half-inning ≈ 73.5% (historical MLB)
-// That means P(NRFI for a full inning) ≈ 0.735 * 0.735 ≈ 54% at baseline — but that's
-// the LEAGUE AVERAGE, including bad pitchers. Good matchups should be 65-80%.
-//
-// The model works in log-odds space to avoid the compression problem of multiplying
-// two sub-1 probabilities together. Instead we:
-//   1. Start from a league-average baseline half-inning NRFI rate
-//   2. Apply pitcher quality as a multiplier on the run expectancy
-//   3. Apply team batting tendency as a secondary adjustment
-//   4. Apply park factor
-//   5. Combine the two half-innings
-
-const HALF_INNING_NRFI_BASELINE = 0.735; // ~73.5% chance no runs score in any half-inning
-
-// Convert probability to log-odds and back
+const HALF_INNING_NRFI_BASELINE = 0.735;
 function toLogOdds(p) { return Math.log(p / (1 - p)); }
 function fromLogOdds(lo) { return 1 / (1 + Math.exp(-lo)); }
-
-// Light Bayesian blend — less aggressive shrinkage than v1
 function bayesBlend(rate, n, prior, priorWeight) {
   if (n < 2) return prior;
   return (rate * n + prior * priorWeight) / (n + priorWeight);
 }
 
 function computeNRFI({ awayPitchNRFI, homePitchNRFI, awayBatNRFI, homeBatNRFI, parkFactor, sampleAway, sampleHome }) {
-  // Blend pitcher hold rates with lighter prior (weight=2 instead of 5)
   const awayPitchAdj = bayesBlend(awayPitchNRFI, sampleAway, HALF_INNING_NRFI_BASELINE, 2);
   const homePitchAdj = bayesBlend(homePitchNRFI, sampleHome, HALF_INNING_NRFI_BASELINE, 2);
-
-  // Team batting NRFI — already has decent sample size from 30 days
   const awayBatAdj = bayesBlend(awayBatNRFI, 20, HALF_INNING_NRFI_BASELINE, 3);
   const homeBatAdj = bayesBlend(homeBatNRFI, 20, HALF_INNING_NRFI_BASELINE, 3);
-
-  // Work in log-odds space to combine signals without compression
   const baseLogOdds = toLogOdds(HALF_INNING_NRFI_BASELINE);
-
-  // Top of 1st: home pitcher faces away batters
-  // Pitcher is 65% of the signal, batting lineup is 35%
   const topPitchDelta = toLogOdds(homePitchAdj) - baseLogOdds;
   const topBatDelta = toLogOdds(awayBatAdj) - baseLogOdds;
   const topLogOdds = baseLogOdds + topPitchDelta * 0.65 + topBatDelta * 0.35;
   const pNoRunTop = fromLogOdds(topLogOdds);
-
-  // Bottom of 1st: away pitcher faces home batters
   const botPitchDelta = toLogOdds(awayPitchAdj) - baseLogOdds;
   const botBatDelta = toLogOdds(homeBatAdj) - baseLogOdds;
   const botLogOdds = baseLogOdds + botPitchDelta * 0.65 + botBatDelta * 0.35;
   const pNoRunBot = fromLogOdds(botLogOdds);
-
-  // Park factor adjustment — applied in log-odds space
-  // PF > 1 = hitter-friendly (lower NRFI), PF < 1 = pitcher-friendly (higher NRFI)
-  const parkShift = (1 - parkFactor) * 0.6; // stronger park influence
-
+  const parkShift = (1 - parkFactor) * 0.6;
   const fullGameLogOdds = toLogOdds(pNoRunTop) + toLogOdds(pNoRunBot) - baseLogOdds + parkShift;
   const nrfi = fromLogOdds(fullGameLogOdds);
-
   return Math.min(0.88, Math.max(0.32, nrfi));
 }
 
 function getConfidence(nrfi) {
-  if (nrfi >= 0.68) return { text: "STRONG", color: "#10b981" };
-  if (nrfi >= 0.58) return { text: "LEAN", color: "#3b82f6" };
-  if (nrfi >= 0.50) return { text: "TOSS-UP", color: "#f59e0b" };
-  return { text: "FADE", color: "#ef4444" };
+  if (nrfi >= 0.68) return { label: "STRONG", color: "#22c55e", bg: "rgba(34,197,94,0.06)" };
+  if (nrfi >= 0.58) return { label: "LEAN", color: "#3b82f6", bg: "rgba(59,130,246,0.06)" };
+  if (nrfi >= 0.50) return { label: "TOSS-UP", color: "#eab308", bg: "rgba(234,179,8,0.06)" };
+  return { label: "FADE", color: "#ef4444", bg: "rgba(239,68,68,0.06)" };
 }
+
+function CircleGauge({ value, color, size = 58 }) {
+  const stroke = 3;
+  const radius = (size - stroke * 2) / 2;
+  const circ = 2 * Math.PI * radius;
+  const offset = circ - (value / 100) * circ;
+  return (
+    <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+      <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth={stroke} />
+      <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke={color} strokeWidth={stroke}
+        strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+        style={{ transition: "stroke-dashoffset 0.8s ease" }} />
+    </svg>
+  );
+}
+
+function StatRow({ label, value, detail }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "5px 0" }}>
+      <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{label}</span>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+        {detail && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{detail}</span>}
+        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>{value}</span>
+      </div>
+    </div>
+  );
+}
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+:root {
+  --bg-root: #09090b;
+  --bg-surface: #111113;
+  --bg-elevated: #19191d;
+  --bg-hover: #222228;
+  --border: rgba(255,255,255,0.06);
+  --border-subtle: rgba(255,255,255,0.03);
+  --text-primary: #fafafa;
+  --text-secondary: #a1a1aa;
+  --text-muted: #52525b;
+  --text-dim: #3f3f46;
+  --accent: #22c55e;
+  --font-sans: 'DM Sans', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg-root); }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+`;
 
 export default function NRFILive() {
   const [games, setGames] = useState([]);
@@ -136,92 +161,58 @@ export default function NRFILive() {
     try {
       setLoading(true);
       setError(null);
-
-      // 1. Get today's schedule with probable pitchers
       const today = new Date().toISOString().split("T")[0];
-      const schedRes = await fetch(
-        `${API_BASE}/schedule?date=${today}&sportId=1&hydrate=probablePitcher(note),linescore,venue`
-      );
+      const schedRes = await fetch(`${API_BASE}/schedule?date=${today}&sportId=1&hydrate=probablePitcher(note),linescore,venue`);
       const schedData = await schedRes.json();
       const todayGames = schedData.dates?.[0]?.games || [];
 
-      // 2. Get season schedule to compute team NRFI records from actual linescore data
-      // Fetch last 30 days of completed games
       const thirtyAgo = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
-      const histRes = await fetch(
-        `${API_BASE}/schedule?startDate=${thirtyAgo}&endDate=${today}&sportId=1&hydrate=linescore&gameType=R`
-      );
+      const histRes = await fetch(`${API_BASE}/schedule?startDate=${thirtyAgo}&endDate=${today}&sportId=1&hydrate=linescore&gameType=R`);
       const histData = await histRes.json();
 
-      // 3. Parse historical first-inning data
       const teamStats = {};
-      const pitcherFirstInning = {};
       let gamesScanned = 0;
-
       for (const dateObj of histData.dates || []) {
         for (const game of dateObj.games || []) {
           if (game.status?.detailedState !== "Final") continue;
           const innings = game.linescore?.innings;
           if (!innings || innings.length === 0) continue;
-
           const firstInning = innings[0];
           const awayRuns1st = firstInning?.away?.runs ?? null;
           const homeRuns1st = firstInning?.home?.runs ?? null;
           if (awayRuns1st === null || homeRuns1st === null) continue;
-
           gamesScanned++;
-          const awayName = game.teams?.away?.team?.name;
-          const homeName = game.teams?.home?.team?.name;
-          const awayAbbr = getAbbrev(awayName);
-          const homeAbbr = getAbbrev(homeName);
-
-          // Track team batting NRFI (how often team doesn't score in 1st)
-          for (const [abbr, runs, side] of [[awayAbbr, awayRuns1st, "bat"], [homeAbbr, homeRuns1st, "bat"]]) {
+          const awayAbbr = getAbbrev(game.teams?.away?.team?.name);
+          const homeAbbr = getAbbrev(game.teams?.home?.team?.name);
+          for (const [abbr, runs] of [[awayAbbr, awayRuns1st], [homeAbbr, homeRuns1st]]) {
             if (!teamStats[abbr]) teamStats[abbr] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
             teamStats[abbr].batGames++;
             if (runs === 0) teamStats[abbr].batNRFI++;
           }
-          // Track team pitching NRFI (how often opposing team doesn't score vs this team's pitcher)
-          // Away pitcher faces home batters (top 1st = away pitching isn't right... 
-          // actually: top 1st = away team bats, home team pitches. bottom 1st = home team bats, away team pitches)
-          // So home pitcher's 1st inning = top of 1st (away runs)
-          // Away pitcher's 1st inning = bottom of 1st (home runs)
           if (!teamStats[homeAbbr]) teamStats[homeAbbr] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
           teamStats[homeAbbr].pitchGames++;
           if (awayRuns1st === 0) teamStats[homeAbbr].pitchNRFI++;
-
           if (!teamStats[awayAbbr]) teamStats[awayAbbr] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
           teamStats[awayAbbr].pitchGames++;
           if (homeRuns1st === 0) teamStats[awayAbbr].pitchNRFI++;
         }
       }
 
-      // 4. For each probable pitcher, look up their game log to get 1st inning data
       const pitcherIds = new Set();
       for (const g of todayGames) {
         if (g.teams?.away?.probablePitcher?.id) pitcherIds.add(g.teams.away.probablePitcher.id);
         if (g.teams?.home?.probablePitcher?.id) pitcherIds.add(g.teams.home.probablePitcher.id);
       }
-
-      // Fetch pitcher game logs in parallel (batched)
       const pitcherNRFIMap = {};
-      const pitcherPromises = [...pitcherIds].map(async (pid) => {
+      await Promise.all([...pitcherIds].map(async (pid) => {
         try {
-          const res = await fetch(
-            `${API_BASE}/people/${pid}/stats?stats=gameLog&group=pitching&season=2026&gameType=R`
-          );
+          const res = await fetch(`${API_BASE}/people/${pid}/stats?stats=gameLog&group=pitching&season=2026&gameType=R`);
           const data = await res.json();
           const splits = data.stats?.[0]?.splits || [];
-          // We need the actual game IDs to look up first inning data
-          // The game log gives us per-game stats but not inning-by-inning
-          // We'll use the season ERA/WHIP/K9 as our pitcher quality proxy
-          // combined with team-level first inning data
-          const seasonStats = data.stats?.[0]?.splits || [];
           let totalER = 0, totalIP = 0, totalK = 0, totalBB = 0, totalH = 0, starts = 0;
-          for (const s of seasonStats) {
-            const ip = parseFloat(s.stat?.inningsPitched || 0);
+          for (const s of splits) {
             totalER += s.stat?.earnedRuns || 0;
-            totalIP += ip;
+            totalIP += parseFloat(s.stat?.inningsPitched || 0);
             totalK += s.stat?.strikeOuts || 0;
             totalBB += s.stat?.baseOnBalls || 0;
             totalH += s.stat?.hits || 0;
@@ -231,13 +222,21 @@ export default function NRFILive() {
           const whip = totalIP > 0 ? (totalBB + totalH) / totalIP : 1.30;
           const k9 = totalIP > 0 ? (totalK * 9) / totalIP : 7.0;
           const bb9 = totalIP > 0 ? (totalBB * 9) / totalIP : 3.0;
-
           pitcherNRFIMap[pid] = { era, whip, k9, bb9, starts, ip: totalIP };
         } catch { pitcherNRFIMap[pid] = null; }
-      });
-      await Promise.all(pitcherPromises);
+      }));
 
-      // 5. Build game cards with computed NRFI probabilities
+      const pitcherToNRFI = (stats) => {
+        if (!stats) return HALF_INNING_NRFI_BASELINE;
+        const runsPerInning = stats.era / 9;
+        const firstInningRE = runsPerInning * 0.90;
+        const kFactor = 1 - Math.min(0.08, Math.max(-0.04, (stats.k9 - 8.5) * 0.015));
+        const bbFactor = 1 + Math.max(0, (stats.bb9 - 2.8) * 0.03);
+        const whipFactor = 1 + Math.max(0, (stats.whip - 1.20) * 0.08);
+        const adjRE = firstInningRE * kFactor * bbFactor * whipFactor;
+        return Math.min(0.93, Math.max(0.45, Math.exp(-adjRE)));
+      };
+
       const processed = todayGames.map((game) => {
         const awayTeam = game.teams?.away?.team?.name || "TBD";
         const homeTeam = game.teams?.home?.team?.name || "TBD";
@@ -248,75 +247,27 @@ export default function NRFILive() {
         const venue = game.venue?.name || "";
         const pf = getParkFactor(venue);
         const status = game.status?.detailedState || "Scheduled";
-
-        // Get first inning result if game is final
         let firstInningResult = null;
         if (game.linescore?.innings?.length > 0) {
           const fi = game.linescore.innings[0];
-          firstInningResult = {
-            awayRuns: fi.away?.runs ?? "?",
-            homeRuns: fi.home?.runs ?? "?",
-          };
+          firstInningResult = { awayRuns: fi.away?.runs ?? "?", homeRuns: fi.home?.runs ?? "?" };
         }
-
-        // Pitcher stats from game log
         const awayPStats = awayP?.id ? pitcherNRFIMap[awayP.id] : null;
         const homePStats = homeP?.id ? pitcherNRFIMap[homeP.id] : null;
-
-        // Team NRFI rates
         const awayTeamData = teamStats[awayAbbr] || { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
         const homeTeamData = teamStats[homeAbbr] || { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
-
         const awayBatNRFI = awayTeamData.batGames > 0 ? awayTeamData.batNRFI / awayTeamData.batGames : 0.70;
         const homeBatNRFI = homeTeamData.batGames > 0 ? homeTeamData.batNRFI / homeTeamData.batGames : 0.70;
-
-        // Convert pitcher season stats to a first-inning hold probability
-        // Key insight: ERA is runs per 9 innings, so run expectancy per inning = ERA/9
-        // But 1st innings are typically ~10% better for starters (fresh arm, set lineup)
-        // P(0 runs in 1 inning) ≈ e^(-runExpectancy) using Poisson approximation
-        const pitcherToNRFI = (stats) => {
-          if (!stats) return HALF_INNING_NRFI_BASELINE;
-          // Run expectancy per inning from ERA
-          const runsPerInning = stats.era / 9;
-          // First-inning discount: starters do ~10% better in the 1st
-          const firstInningRE = runsPerInning * 0.90;
-          // K-rate bonus: high-K pitchers suppress contact chains
-          const kFactor = 1 - Math.min(0.08, Math.max(-0.04, (stats.k9 - 8.5) * 0.015));
-          // Walk penalty: walks in the 1st are deadly for NRFI
-          const bbFactor = 1 + Math.max(0, (stats.bb9 - 2.8) * 0.03);
-          // WHIP adjustment: high WHIP = more baserunners = more run risk
-          const whipFactor = 1 + Math.max(0, (stats.whip - 1.20) * 0.08);
-          
-          const adjRE = firstInningRE * kFactor * bbFactor * whipFactor;
-          // Poisson P(0 runs) = e^(-lambda)
-          const holdRate = Math.exp(-adjRE);
-          return Math.min(0.93, Math.max(0.45, holdRate));
-        };
-
         const awayPitchNRFI = pitcherToNRFI(awayPStats);
         const homePitchNRFI = pitcherToNRFI(homePStats);
-
-        const nrfi = computeNRFI({
-          awayPitchNRFI, homePitchNRFI,
-          awayBatNRFI, homeBatNRFI,
-          parkFactor: pf,
-          sampleAway: awayPStats?.starts || 0,
-          sampleHome: homePStats?.starts || 0,
-        });
-
+        const nrfi = computeNRFI({ awayPitchNRFI, homePitchNRFI, awayBatNRFI, homeBatNRFI, parkFactor: pf, sampleAway: awayPStats?.starts || 0, sampleHome: homePStats?.starts || 0 });
         return {
-          gamePk: game.gamePk,
-          awayTeam, homeTeam, awayAbbr, homeAbbr,
+          gamePk: game.gamePk, awayTeam, homeTeam, awayAbbr, homeAbbr,
           awayP: awayP ? { name: awayP.fullName, id: awayP.id, hand: awayP.pitchHand?.code || "?", ...awayPStats } : null,
           homeP: homeP ? { name: homeP.fullName, id: homeP.id, hand: homeP.pitchHand?.code || "?", ...homePStats } : null,
           venue, parkFactor: pf,
           time: new Date(game.gameDate).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }),
-          status,
-          firstInningResult,
-          nrfi,
-          awayBatNRFI, homeBatNRFI,
-          awayPitchNRFI, homePitchNRFI,
-          awayTeamData, homeTeamData,
+          status, firstInningResult, nrfi, awayBatNRFI, homeBatNRFI, awayPitchNRFI, homePitchNRFI, awayTeamData, homeTeamData,
         };
       });
 
@@ -345,269 +296,260 @@ export default function NRFILive() {
   const avgNRFI = games.length > 0 ? (games.reduce((s, g) => s + g.nrfi, 0) / games.length * 100).toFixed(1) : "—";
   const bestGame = games.length > 0 ? games.reduce((a, b) => a.nrfi > b.nrfi ? a : b) : null;
   const strongPlays = games.filter((g) => g.nrfi >= 0.60).length;
+  const todayStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
 
-  const s = {
-    page: { minHeight: "100vh", background: "#080c14", color: "#e2e8f0", fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', monospace", padding: 0 },
-    wrap: { maxWidth: 920, margin: "0 auto", padding: "20px 14px", position: "relative", zIndex: 1 },
-    h1: { fontSize: 26, fontWeight: 900, margin: 0, background: "linear-gradient(135deg, #38bdf8, #818cf8, #e879f9)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", letterSpacing: "-0.02em" },
-    badge: { fontSize: 10, color: "#10b981", border: "1px solid #064e3b", padding: "2px 8px", borderRadius: 4, fontWeight: 600, marginLeft: 10 },
-    sub: { fontSize: 11, color: "#475569", margin: "4px 0 0 0", letterSpacing: "0.04em" },
-    card: { background: "linear-gradient(160deg, #0f1724, #0c1220)", border: "1px solid #1e293b", borderRadius: 10, overflow: "hidden", marginBottom: 10 },
-    statBox: { background: "#0f1724", border: "1px solid #1e293b", borderRadius: 8, padding: "14px 12px" },
-    btn: (active) => ({ background: active ? "#1e293b" : "transparent", border: `1px solid ${active ? "#3b82f6" : "#1e293b"}`, color: active ? "#93c5fd" : "#64748b", padding: "5px 12px", borderRadius: 6, fontSize: 10, fontFamily: "inherit", cursor: "pointer", fontWeight: 600 }),
-    teamBadge: (color) => ({ width: 26, height: 26, borderRadius: 5, background: color || "#333", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 8, fontWeight: 800, color: "#fff", flexShrink: 0 }),
-  };
-
-  if (loading) {
-    return (
-      <div style={{ ...s.page, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: "#818cf8", marginBottom: 8 }}>Loading NRFI Data...</div>
-          <div style={{ fontSize: 11, color: "#475569" }}>Fetching live data from MLB Stats API</div>
-          <div style={{ fontSize: 11, color: "#475569", marginTop: 4 }}>Scanning 30 days of game results for first-inning stats</div>
-          <div style={{ marginTop: 16, width: 200, height: 3, background: "#1e293b", borderRadius: 4, overflow: "hidden", margin: "16px auto" }}>
-            <div style={{ width: "60%", height: "100%", background: "linear-gradient(90deg, #38bdf8, #818cf8)", borderRadius: 4, animation: "loading 1.5s infinite" }} />
-          </div>
-        </div>
-        <style>{`@keyframes loading { 0% { width: 20%; } 50% { width: 80%; } 100% { width: 20%; } }`}</style>
+  if (loading) return (
+    <><style>{CSS}</style>
+    <div style={{ minHeight: "100vh", background: "var(--bg-root)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-sans)" }}>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ width: 40, height: 40, border: "2px solid var(--border)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 20px" }} />
+        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", marginBottom: 4 }}>Loading today's matchups</div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Analyzing pitcher data & first-inning trends</div>
       </div>
-    );
-  }
+    </div></>
+  );
 
-  if (error) {
-    return (
-      <div style={{ ...s.page, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ textAlign: "center", padding: 40 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "#ef4444", marginBottom: 8 }}>Failed to load data</div>
-          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 16 }}>{error}</div>
-          <button onClick={fetchData} style={{ ...s.btn(true), padding: "8px 20px", fontSize: 12 }}>Retry</button>
-        </div>
+  if (error) return (
+    <><style>{CSS}</style>
+    <div style={{ minHeight: "100vh", background: "var(--bg-root)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-sans)" }}>
+      <div style={{ textAlign: "center", maxWidth: 340, padding: "0 24px" }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", marginBottom: 8 }}>Unable to load data</div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 20, lineHeight: 1.5 }}>{error}</div>
+        <button onClick={fetchData} style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "var(--font-sans)" }}>Try again</button>
       </div>
-    );
-  }
+    </div></>
+  );
 
   return (
-    <div style={s.page}>
-      <div style={s.wrap}>
-        {/* Header */}
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ display: "flex", alignItems: "baseline" }}>
-            <h1 style={s.h1}>NRFI MODEL</h1>
-            <span style={s.badge}>LIVE DATA</span>
-          </div>
-          <p style={s.sub}>
-            NO RUN FIRST INNING — {new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric" })}
-          </p>
-          <p style={{ fontSize: 9, color: "#334155", margin: "6px 0 0 0", lineHeight: 1.5 }}>
-            Data source: MLB Stats API · {dataInfo.gamesScanned} games scanned ({dataInfo.dateRange}) · Pitcher stats from 2026 game logs · Park factors from Statcast
-          </p>
-        </div>
+    <><style>{CSS}</style>
+    <div style={{ minHeight: "100vh", background: "var(--bg-root)", color: "var(--text-primary)", fontFamily: "var(--font-sans)", WebkitFontSmoothing: "antialiased" }}>
 
-        {/* Summary */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 20 }}>
+      {/* Navbar */}
+      <nav style={{
+        borderBottom: "1px solid var(--border)", padding: "0 24px", height: 52,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        position: "sticky", top: 0, background: "rgba(9,9,11,0.8)",
+        backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", zIndex: 100,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{
+            width: 26, height: 26, borderRadius: 6,
+            background: "linear-gradient(135deg, #22c55e, #15803d)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 11, fontWeight: 700, color: "#000", fontFamily: "var(--font-mono)", letterSpacing: "-0.03em",
+          }}>IE</div>
+          <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-0.03em" }}>InningEdge</span>
+          <span style={{ fontSize: 10, color: "var(--text-dim)", fontWeight: 500, marginLeft: 2 }}>BETA</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{todayStr}</span>
+          <button onClick={fetchData} style={{
+            background: "none", border: "1px solid var(--border)", color: "var(--text-muted)",
+            padding: "5px 12px", borderRadius: 6, fontSize: 11, cursor: "pointer",
+            fontFamily: "var(--font-sans)", fontWeight: 500, transition: "all 0.15s",
+          }}
+          onMouseOver={e => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
+          onMouseOut={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text-muted)"; }}
+          >Refresh</button>
+        </div>
+      </nav>
+
+      <div style={{ maxWidth: 860, margin: "0 auto", padding: "24px 16px 80px" }}>
+
+        {/* Stat cards */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1, background: "var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 24 }}>
           {[
-            { label: "AVG NRFI %", value: `${avgNRFI}%`, sub: `${games.length} games today` },
-            { label: "BEST PLAY", value: bestGame ? `${(bestGame.nrfi * 100).toFixed(1)}%` : "—", sub: bestGame ? `${bestGame.awayAbbr}@${bestGame.homeAbbr}` : "" },
-            { label: "STRONG PLAYS", value: strongPlays, sub: "≥60% probability" },
-          ].map((c, i) => (
-            <div key={i} style={s.statBox}>
-              <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.1em", marginBottom: 5, fontWeight: 600 }}>{c.label}</div>
-              <div style={{ fontSize: 20, fontWeight: 900, color: "#f1f5f9" }}>{c.value}</div>
-              <div style={{ fontSize: 9, color: "#475569", marginTop: 2 }}>{c.sub}</div>
+            { label: "Avg NRFI", val: `${avgNRFI}%`, sub: `${games.length} games` },
+            { label: "Top Play", val: bestGame ? `${(bestGame.nrfi * 100).toFixed(1)}%` : "—", sub: bestGame ? `${bestGame.awayAbbr} @ ${bestGame.homeAbbr}` : "" },
+            { label: "Strong Plays", val: String(strongPlays), sub: "≥ 60%" },
+          ].map((s, i) => (
+            <div key={i} style={{ background: "var(--bg-surface)", padding: "16px 18px", animation: `fadeUp 0.35s ease ${i * 0.06}s both` }}>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{s.label}</div>
+              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.04em", lineHeight: 1, fontFamily: "var(--font-mono)" }}>{s.val}</div>
+              <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>{s.sub}</div>
             </div>
           ))}
         </div>
 
         {/* Filters */}
-        <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-          {[
-            { key: "all", label: "All" }, { key: "strong", label: "Strong Plays" },
-            { key: "upcoming", label: "Upcoming" }, { key: "live", label: "Live" },
-          ].map((f) => (
-            <button key={f.key} onClick={() => setFilter(f.key)} style={s.btn(filter === f.key)}>{f.label}</button>
-          ))}
-          <div style={{ flex: 1 }} />
-          <button onClick={() => setSortBy(sortBy === "nrfi" ? "time" : "nrfi")} style={s.btn(false)}>
-            Sort: {sortBy === "nrfi" ? "% ↓" : "Time ↓"}
-          </button>
-          <button onClick={fetchData} style={s.btn(false)}>↻ Refresh</button>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+          <div style={{ display: "flex", gap: 3, background: "var(--bg-surface)", borderRadius: 8, padding: 3, border: "1px solid var(--border)" }}>
+            {[{ key: "all", l: "All" }, { key: "strong", l: "Strong" }, { key: "upcoming", l: "Upcoming" }, { key: "live", l: "Live" }].map(f => (
+              <button key={f.key} onClick={() => setFilter(f.key)} style={{
+                background: filter === f.key ? "var(--bg-elevated)" : "transparent",
+                border: "none", color: filter === f.key ? "var(--text-primary)" : "var(--text-muted)",
+                padding: "5px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                fontWeight: filter === f.key ? 600 : 400, fontFamily: "var(--font-sans)", transition: "all 0.15s",
+              }}>
+                {f.key === "live" && <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "#ef4444", marginRight: 5, animation: "pulse 2s infinite" }} />}
+                {f.l}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setSortBy(sortBy === "nrfi" ? "time" : "nrfi")} style={{
+            background: "var(--bg-surface)", border: "1px solid var(--border)", color: "var(--text-muted)",
+            padding: "5px 14px", borderRadius: 8, fontSize: 11, cursor: "pointer",
+            fontFamily: "var(--font-sans)", fontWeight: 500, transition: "all 0.15s",
+          }}
+          onMouseOver={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)"}
+          onMouseOut={e => e.currentTarget.style.borderColor = "var(--border)"}
+          >Sort: {sortBy === "nrfi" ? "Probability" : "Game Time"}</button>
         </div>
 
-        {/* Games */}
+        {/* Empty */}
         {sorted.length === 0 && (
-          <div style={{ textAlign: "center", padding: 40, color: "#475569", fontSize: 12 }}>
-            No games match the current filter.
+          <div style={{ textAlign: "center", padding: "56px 20px", color: "var(--text-muted)", fontSize: 13, borderRadius: 12, border: "1px dashed var(--border)" }}>
+            No games match this filter.
           </div>
         )}
 
-        {sorted.map((game) => {
-          const conf = getConfidence(game.nrfi);
-          const pct = (game.nrfi * 100).toFixed(1);
-          const isLive = game.status.includes("Progress");
-          const isFinal = game.status === "Final";
-          const expanded = expandedGame === game.gamePk;
+        {/* Game cards */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {sorted.map((game, idx) => {
+            const conf = getConfidence(game.nrfi);
+            const pct = (game.nrfi * 100).toFixed(1);
+            const isLive = game.status.includes("Progress");
+            const isFinal = game.status === "Final";
+            const expanded = expandedGame === game.gamePk;
 
-          let resultBadge = null;
-          if (isFinal && game.firstInningResult) {
-            const wasNRFI = game.firstInningResult.awayRuns === 0 && game.firstInningResult.homeRuns === 0;
-            resultBadge = { text: wasNRFI ? "NRFI ✓" : "YRFI ✗", color: wasNRFI ? "#10b981" : "#ef4444" };
-          }
+            let resultTag = null;
+            if (isFinal && game.firstInningResult) {
+              const wasNRFI = game.firstInningResult.awayRuns === 0 && game.firstInningResult.homeRuns === 0;
+              resultTag = { text: wasNRFI ? "NRFI" : "YRFI", hit: wasNRFI };
+            }
 
-          return (
-            <div key={game.gamePk} style={s.card}>
-              <div style={{ height: 3, background: `linear-gradient(90deg, ${conf.color} ${pct}%, #1e293b ${pct}%)` }} />
-              <div
-                style={{ padding: "12px 14px", cursor: "pointer" }}
-                onClick={() => setExpandedGame(expanded ? null : game.gamePk)}
+            return (
+              <div key={game.gamePk} style={{
+                background: "var(--bg-surface)", border: `1px solid ${expanded ? "rgba(255,255,255,0.1)" : "var(--border)"}`,
+                borderRadius: 10, overflow: "hidden", cursor: "pointer",
+                transition: "border-color 0.2s", animation: `fadeUp 0.35s ease ${idx * 0.03}s both`,
+              }}
+              onClick={() => setExpandedGame(expanded ? null : game.gamePk)}
+              onMouseOver={e => { if (!expanded) e.currentTarget.style.borderColor = "rgba(255,255,255,0.09)"; }}
+              onMouseOut={e => { if (!expanded) e.currentTarget.style.borderColor = "var(--border)"; }}
               >
-                {/* Top row */}
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <div style={s.teamBadge(TEAM_COLORS[game.awayAbbr])}>{game.awayAbbr}</div>
-                    <span style={{ fontSize: 11, color: "#475569", fontWeight: 700 }}>@</span>
-                    <div style={s.teamBadge(TEAM_COLORS[game.homeAbbr])}>{game.homeAbbr}</div>
-                    <span style={{
-                      fontSize: 8, fontWeight: 700, color: "#fff",
-                      background: isLive ? "#ef4444" : isFinal ? "#374151" : "#065f46",
-                      padding: "2px 6px", borderRadius: 3, letterSpacing: "0.05em",
-                      animation: isLive ? "pulse 2s infinite" : "none",
-                    }}>
-                      {isLive ? "LIVE" : isFinal ? "FINAL" : game.time + " ET"}
-                    </span>
-                    {resultBadge && (
-                      <span style={{ fontSize: 8, fontWeight: 800, color: resultBadge.color, background: resultBadge.color + "20", padding: "2px 6px", borderRadius: 3 }}>
-                        {resultBadge.text}
-                      </span>
-                    )}
-                    {isFinal && game.firstInningResult && (
-                      <span style={{ fontSize: 9, color: "#64748b" }}>
-                        1st: {game.firstInningResult.awayRuns}-{game.firstInningResult.homeRuns}
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 22, fontWeight: 900, color: conf.color, lineHeight: 1 }}>{pct}%</div>
-                    <div style={{ fontSize: 8, fontWeight: 700, color: conf.color, letterSpacing: "0.08em", marginTop: 1 }}>{conf.text}</div>
-                  </div>
-                </div>
-
-                {/* Pitchers */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 6, alignItems: "center" }}>
-                  <div>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: "#cbd5e1" }}>{game.awayP?.name || "TBD"}</div>
-                    {game.awayP && (
-                      <div style={{ fontSize: 9, color: "#64748b", marginTop: 1 }}>
-                        {game.awayP.hand}HP · {game.awayP.era?.toFixed(2) || "—"} ERA · {game.awayP.whip?.toFixed(2) || "—"} WHIP · {game.awayP.k9?.toFixed(1) || "—"} K/9
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 9, color: "#1e293b", fontWeight: 800 }}>VS</div>
-                  <div style={{ textAlign: "right" }}>
-                    <div style={{ fontSize: 11, fontWeight: 700, color: "#cbd5e1" }}>{game.homeP?.name || "TBD"}</div>
-                    {game.homeP && (
-                      <div style={{ fontSize: 9, color: "#64748b", marginTop: 1 }}>
-                        {game.homeP.hand}HP · {game.homeP.era?.toFixed(2) || "—"} ERA · {game.homeP.whip?.toFixed(2) || "—"} WHIP · {game.homeP.k9?.toFixed(1) || "—"} K/9
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Bottom info */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: "1px solid #1e293b" }}>
-                  <div style={{ fontSize: 9, color: "#475569" }}>{game.venue}</div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    <span style={{ fontSize: 8, color: "#64748b", background: "#0c1220", border: "1px solid #1e293b", padding: "1px 5px", borderRadius: 3 }}>
-                      PF: {game.parkFactor.toFixed(2)}
-                    </span>
-                    <span style={{ fontSize: 8, color: "#64748b", background: "#0c1220", border: "1px solid #1e293b", padding: "1px 5px", borderRadius: 3 }}>
-                      {game.awayAbbr} bat NRFI: {(game.awayBatNRFI * 100).toFixed(0)}%
-                    </span>
-                    <span style={{ fontSize: 8, color: "#64748b", background: "#0c1220", border: "1px solid #1e293b", padding: "1px 5px", borderRadius: 3 }}>
-                      {game.homeAbbr} bat NRFI: {(game.homeBatNRFI * 100).toFixed(0)}%
-                    </span>
-                    <span style={{ fontSize: 8, color: "#94a3b8" }}>▾</span>
-                  </div>
-                </div>
-
-                {/* Expanded detail */}
-                {expanded && (
-                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #1e293b" }}>
-                    <div style={{ fontSize: 9, color: "#64748b", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 8 }}>MODEL BREAKDOWN</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                      <div style={{ fontSize: 10, color: "#94a3b8" }}>
-                        <div style={{ marginBottom: 4 }}>
-                          <strong style={{ color: "#cbd5e1" }}>{game.awayAbbr} Pitching Hold Rate:</strong> {(game.awayPitchNRFI * 100).toFixed(1)}%
-                        </div>
-                        <div style={{ marginBottom: 4 }}>
-                          <strong style={{ color: "#cbd5e1" }}>{game.awayAbbr} Batting NRFI:</strong> {(game.awayBatNRFI * 100).toFixed(1)}%
-                          <span style={{ color: "#475569" }}> ({game.awayTeamData.batNRFI}/{game.awayTeamData.batGames} games)</span>
-                        </div>
-                        {game.awayP && (
-                          <div style={{ fontSize: 9, color: "#475569" }}>
-                            {game.awayP.starts || 0} starts · {game.awayP.ip?.toFixed(1) || 0} IP · {game.awayP.bb9?.toFixed(1) || "—"} BB/9
+                <div style={{ padding: "14px 18px" }}>
+                  {/* Main row */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    {/* Teams + pitchers */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+                      {/* Away */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <div style={{
+                          width: 30, height: 30, borderRadius: 7, flexShrink: 0,
+                          background: TEAM_COLORS[game.awayAbbr] || "#333",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 9, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
+                        }}>{game.awayAbbr}</div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {game.awayP?.name || "TBD"}
                           </div>
-                        )}
+                          {game.awayP && (
+                            <div style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 1 }}>
+                              {game.awayP.era?.toFixed(2)} ERA · {game.awayP.whip?.toFixed(2)}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div style={{ fontSize: 10, color: "#94a3b8" }}>
-                        <div style={{ marginBottom: 4 }}>
-                          <strong style={{ color: "#cbd5e1" }}>{game.homeAbbr} Pitching Hold Rate:</strong> {(game.homePitchNRFI * 100).toFixed(1)}%
-                        </div>
-                        <div style={{ marginBottom: 4 }}>
-                          <strong style={{ color: "#cbd5e1" }}>{game.homeAbbr} Batting NRFI:</strong> {(game.homeBatNRFI * 100).toFixed(1)}%
-                          <span style={{ color: "#475569" }}> ({game.homeTeamData.batNRFI}/{game.homeTeamData.batGames} games)</span>
-                        </div>
-                        {game.homeP && (
-                          <div style={{ fontSize: 9, color: "#475569" }}>
-                            {game.homeP.starts || 0} starts · {game.homeP.ip?.toFixed(1) || 0} IP · {game.homeP.bb9?.toFixed(1) || "—"} BB/9
+
+                      <span style={{ fontSize: 10, color: "var(--text-dim)", fontWeight: 600, flexShrink: 0 }}>@</span>
+
+                      {/* Home */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        <div style={{
+                          width: 30, height: 30, borderRadius: 7, flexShrink: 0,
+                          background: TEAM_COLORS[game.homeAbbr] || "#333",
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 9, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
+                        }}>{game.homeAbbr}</div>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {game.homeP?.name || "TBD"}
                           </div>
-                        )}
+                          {game.homeP && (
+                            <div style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 1 }}>
+                              {game.homeP.era?.toFixed(2)} ERA · {game.homeP.whip?.toFixed(2)}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
-                    <div style={{ fontSize: 9, color: "#334155", marginTop: 8 }}>
-                      Model v2: Poisson 1st-inning hold rate from ERA/WHIP/K9/BB9 · Combined in log-odds space (65% pitcher / 35% lineup weight) · Park factor {game.parkFactor.toFixed(2)} ({game.parkFactor > 1.03 ? "hitter-friendly" : game.parkFactor < 0.97 ? "pitcher-friendly" : "neutral"}) · Bayesian prior weight: 2
+
+                    {/* Right: status + gauge */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0, marginLeft: 12 }}>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+                        <span style={{
+                          fontSize: 10, fontWeight: 500, fontFamily: "var(--font-mono)",
+                          color: isLive ? "#ef4444" : isFinal ? "var(--text-dim)" : "var(--text-muted)",
+                          animation: isLive ? "pulse 2s ease infinite" : "none",
+                        }}>
+                          {isLive ? "● LIVE" : isFinal ? "FINAL" : game.time + " ET"}
+                        </span>
+                        {resultTag && (
+                          <span style={{
+                            fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)",
+                            color: resultTag.hit ? "#22c55e" : "#ef4444",
+                          }}>
+                            {resultTag.text} {game.firstInningResult.awayRuns}-{game.firstInningResult.homeRuns}
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{ position: "relative", width: 58, height: 58 }}>
+                        <CircleGauge value={parseFloat(pct)} color={conf.color} />
+                        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: conf.color, fontFamily: "var(--font-mono)", lineHeight: 1 }}>{pct}</div>
+                          <div style={{ fontSize: 7, fontWeight: 600, color: conf.color, letterSpacing: "0.1em", marginTop: 1 }}>{conf.label}</div>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
 
-        {/* Legend & methodology */}
-        <div style={{ marginTop: 20, ...s.statBox }}>
-          <div style={{ fontSize: 9, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8, fontWeight: 700 }}>DATA SOURCES & METHODOLOGY</div>
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
-            {[
-              { label: "STRONG", color: "#10b981", desc: "≥68%" },
-              { label: "LEAN", color: "#3b82f6", desc: "58–67%" },
-              { label: "TOSS-UP", color: "#f59e0b", desc: "50–57%" },
-              { label: "FADE", color: "#ef4444", desc: "<50%" },
-            ].map((t) => (
-              <div key={t.label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <div style={{ width: 7, height: 7, borderRadius: "50%", background: t.color }} />
-                <span style={{ fontSize: 9, color: "#94a3b8", fontWeight: 600 }}>{t.label}</span>
-                <span style={{ fontSize: 8, color: "#475569" }}>{t.desc}</span>
-              </div>
-            ))}
-          </div>
-          <div style={{ fontSize: 9, color: "#334155", lineHeight: 1.7 }}>
-            <strong style={{ color: "#475569" }}>Pitcher stats:</strong> 2026 season game log from MLB Stats API (ERA, WHIP, K/9, BB/9) · Poisson model: P(0 runs) = e^(-λ) where λ = adjusted run expectancy per inning · 10% first-inning discount for starter freshness · K-rate, walk rate, and WHIP multipliers
-            <br />
-            <strong style={{ color: "#475569" }}>Team NRFI rates:</strong> Computed from actual first-inning linescore data over last 30 days ({dataInfo.gamesScanned} games scanned) · Tracks both batting NRFI (team doesn't score) and pitching NRFI (team's pitcher holds)
-            <br />
-            <strong style={{ color: "#475569" }}>Combination:</strong> Log-odds space blending avoids the compression problem of multiplying probabilities · Pitcher quality weighted 65%, lineup tendency 35% · Light Bayesian shrinkage (prior weight 2) preserves signal from small samples
-            <br />
-            <strong style={{ color: "#475569" }}>Park factors:</strong> Statcast run factors (2024-25 avg) · Applied as log-odds shift for stronger influence at extremes
-            <br />
-            <strong style={{ color: "#475569" }}>Tap any game card</strong> to see the full model breakdown for that matchup.
-          </div>
-        </div>
+                  {/* Meta strip */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border-subtle)" }}>
+                    <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{game.venue}</span>
+                    <span style={{ fontSize: 10, color: "var(--text-dim)" }}>·</span>
+                    <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>PF {game.parkFactor.toFixed(2)}</span>
+                    <div style={{ flex: 1 }} />
+                    {game.awayP && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{game.awayP.k9?.toFixed(1)} K/9</span>}
+                    {game.awayP && game.homeP && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>·</span>}
+                    {game.homeP && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{game.homeP.k9?.toFixed(1)} K/9</span>}
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--text-dim)" strokeWidth="1.5"
+                      style={{ transform: expanded ? "rotate(180deg)" : "rotate(0)", transition: "transform 0.2s", marginLeft: 4 }}>
+                      <path d="M2 4l3 3 3-3" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </div>
 
-        <div style={{ textAlign: "center", fontSize: 8, color: "#1e293b", marginTop: 16, paddingBottom: 16 }}>
-          Live data from statsapi.mlb.com · For entertainment & research only
+                  {/* Expanded */}
+                  {expanded && (
+                    <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+                      {[
+                        { abbr: game.awayAbbr, side: "Away", pitchNRFI: game.awayPitchNRFI, batNRFI: game.awayBatNRFI, td: game.awayTeamData, p: game.awayP },
+                        { abbr: game.homeAbbr, side: "Home", pitchNRFI: game.homePitchNRFI, batNRFI: game.homeBatNRFI, td: game.homeTeamData, p: game.homeP },
+                      ].map((t) => (
+                        <div key={t.side}>
+                          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
+                            {t.abbr} — {t.side}
+                          </div>
+                          <StatRow label="Pitch Hold Rate" value={`${(t.pitchNRFI * 100).toFixed(1)}%`} />
+                          <StatRow label="Batting NRFI" value={`${(t.batNRFI * 100).toFixed(1)}%`} detail={`${t.td.batNRFI}/${t.td.batGames}`} />
+                          {t.p && <>
+                            <StatRow label="Starts" value={t.p.starts || 0} />
+                            <StatRow label="IP" value={t.p.ip?.toFixed(1) || "—"} />
+                            <StatRow label="BB/9" value={t.p.bb9?.toFixed(1) || "—"} />
+                            <StatRow label="K/9" value={t.p.k9?.toFixed(1) || "—"} />
+                          </>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
-      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }`}</style>
-    </div>
+    </div></>
   );
 }
