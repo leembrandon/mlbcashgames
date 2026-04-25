@@ -45,7 +45,6 @@ const PARK_FACTORS = {
 function getAbbrev(name) {
   return TEAM_ABBREVS[name] || name?.split(" ").pop()?.substring(0, 3).toUpperCase() || "???";
 }
-
 function getParkFactor(venueName) {
   if (!venueName) return 1.0;
   for (const [key, val] of Object.entries(PARK_FACTORS)) {
@@ -54,403 +53,354 @@ function getParkFactor(venueName) {
   return 1.0;
 }
 
-// === NRFI MODEL v2 ===
+// === MODEL v2 ===
 const HALF_INNING_NRFI_BASELINE = 0.735;
 function toLogOdds(p) { return Math.log(p / (1 - p)); }
 function fromLogOdds(lo) { return 1 / (1 + Math.exp(-lo)); }
-function bayesBlend(rate, n, prior, priorWeight) {
-  if (n < 2) return prior;
-  return (rate * n + prior * priorWeight) / (n + priorWeight);
-}
+function bayesBlend(rate, n, prior, pw) { return n < 2 ? prior : (rate * n + prior * pw) / (n + pw); }
 
 function computeNRFI({ awayPitchNRFI, homePitchNRFI, awayBatNRFI, homeBatNRFI, parkFactor, sampleAway, sampleHome }) {
-  const awayPitchAdj = bayesBlend(awayPitchNRFI, sampleAway, HALF_INNING_NRFI_BASELINE, 2);
-  const homePitchAdj = bayesBlend(homePitchNRFI, sampleHome, HALF_INNING_NRFI_BASELINE, 2);
-  const awayBatAdj = bayesBlend(awayBatNRFI, 20, HALF_INNING_NRFI_BASELINE, 3);
-  const homeBatAdj = bayesBlend(homeBatNRFI, 20, HALF_INNING_NRFI_BASELINE, 3);
-  const baseLogOdds = toLogOdds(HALF_INNING_NRFI_BASELINE);
-  const topPitchDelta = toLogOdds(homePitchAdj) - baseLogOdds;
-  const topBatDelta = toLogOdds(awayBatAdj) - baseLogOdds;
-  const topLogOdds = baseLogOdds + topPitchDelta * 0.65 + topBatDelta * 0.35;
-  const pNoRunTop = fromLogOdds(topLogOdds);
-  const botPitchDelta = toLogOdds(awayPitchAdj) - baseLogOdds;
-  const botBatDelta = toLogOdds(homeBatAdj) - baseLogOdds;
-  const botLogOdds = baseLogOdds + botPitchDelta * 0.65 + botBatDelta * 0.35;
-  const pNoRunBot = fromLogOdds(botLogOdds);
-  const parkShift = (1 - parkFactor) * 0.6;
-  const fullGameLogOdds = toLogOdds(pNoRunTop) + toLogOdds(pNoRunBot) - baseLogOdds + parkShift;
-  const nrfi = fromLogOdds(fullGameLogOdds);
-  return Math.min(0.88, Math.max(0.32, nrfi));
+  const B = HALF_INNING_NRFI_BASELINE, blo = toLogOdds(B);
+  const ap = bayesBlend(awayPitchNRFI, sampleAway, B, 2);
+  const hp = bayesBlend(homePitchNRFI, sampleHome, B, 2);
+  const ab = bayesBlend(awayBatNRFI, 20, B, 3);
+  const hb = bayesBlend(homeBatNRFI, 20, B, 3);
+  const topLO = blo + (toLogOdds(hp) - blo) * 0.65 + (toLogOdds(ab) - blo) * 0.35;
+  const botLO = blo + (toLogOdds(ap) - blo) * 0.65 + (toLogOdds(hb) - blo) * 0.35;
+  const ps = (1 - parkFactor) * 0.6;
+  return Math.min(0.88, Math.max(0.32, fromLogOdds(toLogOdds(fromLogOdds(topLO)) + toLogOdds(fromLogOdds(botLO)) - blo + ps)));
 }
 
 function getConfidence(nrfi) {
-  if (nrfi >= 0.68) return { label: "STRONG", color: "#22c55e", bg: "rgba(34,197,94,0.06)" };
-  if (nrfi >= 0.58) return { label: "LEAN", color: "#3b82f6", bg: "rgba(59,130,246,0.06)" };
-  if (nrfi >= 0.50) return { label: "TOSS-UP", color: "#eab308", bg: "rgba(234,179,8,0.06)" };
-  return { label: "FADE", color: "#ef4444", bg: "rgba(239,68,68,0.06)" };
+  if (nrfi >= 0.68) return { label: "Strong", color: "#0d9255" };
+  if (nrfi >= 0.58) return { label: "Lean", color: "#2b7cc1" };
+  if (nrfi >= 0.50) return { label: "Toss-up", color: "#c08a18" };
+  return { label: "Fade", color: "#c43a3a" };
 }
 
-function CircleGauge({ value, color, size = 58 }) {
-  const stroke = 3;
-  const radius = (size - stroke * 2) / 2;
-  const circ = 2 * Math.PI * radius;
-  const offset = circ - (value / 100) * circ;
+// Horizontal bar
+function ProbBar({ value, color }) {
   return (
-    <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
-      <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke="rgba(255,255,255,0.04)" strokeWidth={stroke} />
-      <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke={color} strokeWidth={stroke}
-        strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
-        style={{ transition: "stroke-dashoffset 0.8s ease" }} />
-    </svg>
+    <div style={{ width: "100%", height: 6, borderRadius: 3, background: "#e8eef6", overflow: "hidden" }}>
+      <div style={{
+        height: "100%", borderRadius: 3, background: color,
+        width: `${value}%`, transition: "width 0.6s cubic-bezier(.4,0,.2,1)",
+      }} />
+    </div>
   );
 }
 
-function StatRow({ label, value, detail }) {
+function StatLine({ label, value, detail }) {
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "5px 0" }}>
-      <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{label}</span>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "4px 0", borderBottom: "1px solid #f0f4f9" }}>
+      <span className="ie-stat-label">{label}</span>
       <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-        {detail && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{detail}</span>}
-        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", fontFamily: "var(--font-mono)" }}>{value}</span>
+        {detail && <span className="ie-stat-detail">{detail}</span>}
+        <span className="ie-stat-value">{value}</span>
       </div>
     </div>
   );
 }
 
 const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,400&family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600&display=swap');
 
 :root {
-  --bg-root: #09090b;
-  --bg-surface: #111113;
-  --bg-elevated: #19191d;
-  --bg-hover: #222228;
-  --border: rgba(255,255,255,0.06);
-  --border-subtle: rgba(255,255,255,0.03);
-  --text-primary: #fafafa;
-  --text-secondary: #a1a1aa;
-  --text-muted: #52525b;
-  --text-dim: #3f3f46;
-  --accent: #22c55e;
-  --font-sans: 'DM Sans', -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --white: #ffffff;
+  --powder: #f4f8fc;
+  --powder-mid: #e4edf7;
+  --powder-deep: #c9daf0;
+  --blue: #4a90c4;
+  --blue-dark: #2b5f8a;
+  --blue-deeper: #1a3d5c;
+  --ink: #1b2431;
+  --ink-light: #3d4f63;
+  --ink-muted: #7a8a9e;
+  --ink-faint: #a8b5c4;
+  --ink-ghost: #c8d1dc;
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'Outfit', -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { background: var(--bg-root); }
+body { background: var(--powder); }
 
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(8px); }
+@keyframes enter {
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }
-@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Mobile-first responsive */
-.ie-stats-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; }
-.ie-card-main { display: flex; align-items: center; justify-content: space-between; }
-.ie-teams { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-.ie-team-block { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ie-pitcher-stats { font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 1px; }
-.ie-right-col { display: flex; align-items: center; gap: 14px; flex-shrink: 0; margin-left: 12px; }
-.ie-meta { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); flex-wrap: wrap; }
-.ie-meta-venue { font-size: 10px; color: var(--text-dim); }
-.ie-meta-k9 { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
-.ie-expanded { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
-.ie-nav-date { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
-.ie-filter-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
-.ie-filter-pills { display: flex; gap: 3px; background: var(--bg-surface); border-radius: 8px; padding: 3px; border: 1px solid var(--border); }
-.ie-pitcher-name { font-size: 13px; font-weight: 600; color: var(--text-primary); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ie-at-symbol { font-size: 10px; color: var(--text-dim); font-weight: 600; flex-shrink: 0; }
+/* Base classes */
+.ie-stat-label { font-size: 12px; color: var(--ink-muted); font-family: var(--font-body); }
+.ie-stat-value { font-size: 13px; font-weight: 600; color: var(--ink); font-family: var(--font-mono); }
+.ie-stat-detail { font-size: 10px; color: var(--ink-faint); font-family: var(--font-mono); }
+
+.ie-stats-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+.ie-card-inner { padding: 20px; }
+.ie-card-main { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.ie-matchup { display: flex; align-items: center; gap: 16px; flex: 1; min-width: 0; }
+.ie-team-col { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+.ie-at { font-size: 12px; color: var(--ink-faint); font-weight: 500; font-family: var(--font-body); flex-shrink: 0; }
+.ie-p-name { font-size: 14px; font-weight: 500; color: var(--ink); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: var(--font-body); }
+.ie-p-stats { font-size: 11px; color: var(--ink-muted); font-family: var(--font-mono); margin-top: 2px; }
+.ie-score-col { flex-shrink: 0; text-align: right; min-width: 72px; }
+.ie-meta-row { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--powder-mid); flex-wrap: wrap; }
+.ie-meta-item { font-size: 11px; color: var(--ink-faint); font-family: var(--font-body); }
+.ie-meta-mono { font-size: 10px; color: var(--ink-faint); font-family: var(--font-mono); }
+.ie-k9-group { display: contents; }
+.ie-expanded { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--powder-mid); }
+.ie-nav-date { font-size: 12px; color: var(--ink-muted); font-family: var(--font-body); }
+.ie-filter-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 
 @media (max-width: 640px) {
-  .ie-stats-grid { grid-template-columns: repeat(3,1fr); }
-  .ie-stats-grid > div { padding: 12px 10px !important; }
-  .ie-stats-grid .ie-stat-val { font-size: 20px !important; }
+  .ie-stats-row { grid-template-columns: repeat(3,1fr); gap: 8px; }
+  .ie-stats-row > div { padding: 12px !important; }
 
-  .ie-card-main { flex-direction: column; align-items: stretch; gap: 12px; }
-  .ie-teams { flex-direction: column; gap: 6px; }
-  .ie-team-block { width: 100%; }
-  .ie-at-symbol { display: none; }
-  .ie-right-col { margin-left: 0; justify-content: space-between; width: 100%;
-    padding-top: 10px; border-top: 1px solid var(--border-subtle); }
-  .ie-pitcher-name { font-size: 12px; }
-  .ie-pitcher-stats { font-size: 9px; }
+  .ie-card-inner { padding: 14px; }
+  .ie-card-main { flex-direction: column; gap: 12px; }
+  .ie-matchup { flex-direction: column; align-items: stretch; gap: 8px; }
+  .ie-at { display: none; }
+  .ie-team-col { width: 100%; }
+  .ie-score-col { display: flex; align-items: center; justify-content: space-between;
+    width: 100%; text-align: left; min-width: unset;
+    padding-top: 10px; border-top: 1px solid var(--powder-mid); }
+  .ie-p-name { font-size: 13px; }
 
-  .ie-meta { gap: 6px; }
-  .ie-meta-venue { flex-basis: 100%; margin-bottom: 2px; }
-  .ie-meta-k9-group { display: none; }
-
+  .ie-meta-row { gap: 6px; }
+  .ie-k9-group { display: none; }
   .ie-expanded { grid-template-columns: 1fr; gap: 16px; }
-
   .ie-nav-date { display: none; }
-  .ie-filter-pills { overflow-x: auto; flex-shrink: 0; }
-  .ie-filter-pills button { padding: 5px 10px !important; font-size: 11px !important; }
+
+  .ie-filter-row { gap: 6px; }
+  .ie-filter-row button { padding: 6px 10px !important; font-size: 11px !important; }
 }
 
 @media (max-width: 380px) {
-  .ie-stats-grid { grid-template-columns: 1fr; }
+  .ie-stats-row { grid-template-columns: 1fr; gap: 6px; }
 }
 `;
 
 export default function NRFILive() {
   const [games, setGames] = useState([]);
-  const [teamNRFI, setTeamNRFI] = useState({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sortBy, setSortBy] = useState("nrfi");
   const [filter, setFilter] = useState("all");
-  const [dataInfo, setDataInfo] = useState({ gamesScanned: 0, dateRange: "" });
+  const [dataInfo, setDataInfo] = useState({ gamesScanned: 0 });
   const [expandedGame, setExpandedGame] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
-      setLoading(true);
-      setError(null);
+      setLoading(true); setError(null);
       const today = new Date().toISOString().split("T")[0];
       const schedRes = await fetch(`${API_BASE}/schedule?date=${today}&sportId=1&hydrate=probablePitcher(note),linescore,venue`);
       const schedData = await schedRes.json();
       const todayGames = schedData.dates?.[0]?.games || [];
-
       const thirtyAgo = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
       const histRes = await fetch(`${API_BASE}/schedule?startDate=${thirtyAgo}&endDate=${today}&sportId=1&hydrate=linescore&gameType=R`);
       const histData = await histRes.json();
-
       const teamStats = {};
       let gamesScanned = 0;
-      for (const dateObj of histData.dates || []) {
-        for (const game of dateObj.games || []) {
-          if (game.status?.detailedState !== "Final") continue;
-          const innings = game.linescore?.innings;
-          if (!innings || innings.length === 0) continue;
-          const firstInning = innings[0];
-          const awayRuns1st = firstInning?.away?.runs ?? null;
-          const homeRuns1st = firstInning?.home?.runs ?? null;
-          if (awayRuns1st === null || homeRuns1st === null) continue;
-          gamesScanned++;
-          const awayAbbr = getAbbrev(game.teams?.away?.team?.name);
-          const homeAbbr = getAbbrev(game.teams?.home?.team?.name);
-          for (const [abbr, runs] of [[awayAbbr, awayRuns1st], [homeAbbr, homeRuns1st]]) {
-            if (!teamStats[abbr]) teamStats[abbr] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
-            teamStats[abbr].batGames++;
-            if (runs === 0) teamStats[abbr].batNRFI++;
-          }
-          if (!teamStats[homeAbbr]) teamStats[homeAbbr] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
-          teamStats[homeAbbr].pitchGames++;
-          if (awayRuns1st === 0) teamStats[homeAbbr].pitchNRFI++;
-          if (!teamStats[awayAbbr]) teamStats[awayAbbr] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
-          teamStats[awayAbbr].pitchGames++;
-          if (homeRuns1st === 0) teamStats[awayAbbr].pitchNRFI++;
+      for (const d of histData.dates || []) for (const g of d.games || []) {
+        if (g.status?.detailedState !== "Final") continue;
+        const inn = g.linescore?.innings; if (!inn?.length) continue;
+        const ar = inn[0]?.away?.runs ?? null, hr = inn[0]?.home?.runs ?? null;
+        if (ar === null || hr === null) continue; gamesScanned++;
+        const aa = getAbbrev(g.teams?.away?.team?.name), ha = getAbbrev(g.teams?.home?.team?.name);
+        for (const [ab, r] of [[aa, ar], [ha, hr]]) {
+          if (!teamStats[ab]) teamStats[ab] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
+          teamStats[ab].batGames++; if (r === 0) teamStats[ab].batNRFI++;
         }
+        if (!teamStats[ha]) teamStats[ha] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
+        teamStats[ha].pitchGames++; if (ar === 0) teamStats[ha].pitchNRFI++;
+        if (!teamStats[aa]) teamStats[aa] = { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
+        teamStats[aa].pitchGames++; if (hr === 0) teamStats[aa].pitchNRFI++;
       }
-
-      const pitcherIds = new Set();
+      const pids = new Set();
       for (const g of todayGames) {
-        if (g.teams?.away?.probablePitcher?.id) pitcherIds.add(g.teams.away.probablePitcher.id);
-        if (g.teams?.home?.probablePitcher?.id) pitcherIds.add(g.teams.home.probablePitcher.id);
+        if (g.teams?.away?.probablePitcher?.id) pids.add(g.teams.away.probablePitcher.id);
+        if (g.teams?.home?.probablePitcher?.id) pids.add(g.teams.home.probablePitcher.id);
       }
-      const pitcherNRFIMap = {};
-      await Promise.all([...pitcherIds].map(async (pid) => {
+      const pMap = {};
+      await Promise.all([...pids].map(async pid => {
         try {
-          const res = await fetch(`${API_BASE}/people/${pid}/stats?stats=gameLog&group=pitching&season=2026&gameType=R`);
-          const data = await res.json();
-          const splits = data.stats?.[0]?.splits || [];
-          let totalER = 0, totalIP = 0, totalK = 0, totalBB = 0, totalH = 0, starts = 0;
-          for (const s of splits) {
-            totalER += s.stat?.earnedRuns || 0;
-            totalIP += parseFloat(s.stat?.inningsPitched || 0);
-            totalK += s.stat?.strikeOuts || 0;
-            totalBB += s.stat?.baseOnBalls || 0;
-            totalH += s.stat?.hits || 0;
-            starts++;
-          }
-          const era = totalIP > 0 ? (totalER * 9) / totalIP : 4.50;
-          const whip = totalIP > 0 ? (totalBB + totalH) / totalIP : 1.30;
-          const k9 = totalIP > 0 ? (totalK * 9) / totalIP : 7.0;
-          const bb9 = totalIP > 0 ? (totalBB * 9) / totalIP : 3.0;
-          pitcherNRFIMap[pid] = { era, whip, k9, bb9, starts, ip: totalIP };
-        } catch { pitcherNRFIMap[pid] = null; }
+          const r = await fetch(`${API_BASE}/people/${pid}/stats?stats=gameLog&group=pitching&season=2026&gameType=R`);
+          const d = await r.json(); const sp = d.stats?.[0]?.splits || [];
+          let er = 0, ip = 0, k = 0, bb = 0, h = 0, st = 0;
+          for (const s of sp) { er += s.stat?.earnedRuns||0; ip += parseFloat(s.stat?.inningsPitched||0); k += s.stat?.strikeOuts||0; bb += s.stat?.baseOnBalls||0; h += s.stat?.hits||0; st++; }
+          pMap[pid] = { era: ip>0?(er*9)/ip:4.5, whip: ip>0?(bb+h)/ip:1.3, k9: ip>0?(k*9)/ip:7, bb9: ip>0?(bb*9)/ip:3, starts: st, ip };
+        } catch { pMap[pid] = null; }
       }));
 
-      const pitcherToNRFI = (stats) => {
-        if (!stats) return HALF_INNING_NRFI_BASELINE;
-        const runsPerInning = stats.era / 9;
-        const firstInningRE = runsPerInning * 0.90;
-        const kFactor = 1 - Math.min(0.08, Math.max(-0.04, (stats.k9 - 8.5) * 0.015));
-        const bbFactor = 1 + Math.max(0, (stats.bb9 - 2.8) * 0.03);
-        const whipFactor = 1 + Math.max(0, (stats.whip - 1.20) * 0.08);
-        const adjRE = firstInningRE * kFactor * bbFactor * whipFactor;
-        return Math.min(0.93, Math.max(0.45, Math.exp(-adjRE)));
+      const p2n = s => {
+        if (!s) return HALF_INNING_NRFI_BASELINE;
+        const re = (s.era / 9) * 0.9;
+        const kf = 1 - Math.min(0.08, Math.max(-0.04, (s.k9 - 8.5) * 0.015));
+        const bf = 1 + Math.max(0, (s.bb9 - 2.8) * 0.03);
+        const wf = 1 + Math.max(0, (s.whip - 1.2) * 0.08);
+        return Math.min(0.93, Math.max(0.45, Math.exp(-re * kf * bf * wf)));
       };
 
-      const processed = todayGames.map((game) => {
-        const awayTeam = game.teams?.away?.team?.name || "TBD";
-        const homeTeam = game.teams?.home?.team?.name || "TBD";
-        const awayAbbr = getAbbrev(awayTeam);
-        const homeAbbr = getAbbrev(homeTeam);
-        const awayP = game.teams?.away?.probablePitcher;
-        const homeP = game.teams?.home?.probablePitcher;
-        const venue = game.venue?.name || "";
-        const pf = getParkFactor(venue);
-        const status = game.status?.detailedState || "Scheduled";
-        let firstInningResult = null;
-        if (game.linescore?.innings?.length > 0) {
-          const fi = game.linescore.innings[0];
-          firstInningResult = { awayRuns: fi.away?.runs ?? "?", homeRuns: fi.home?.runs ?? "?" };
-        }
-        const awayPStats = awayP?.id ? pitcherNRFIMap[awayP.id] : null;
-        const homePStats = homeP?.id ? pitcherNRFIMap[homeP.id] : null;
-        const awayTeamData = teamStats[awayAbbr] || { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
-        const homeTeamData = teamStats[homeAbbr] || { batGames: 0, batNRFI: 0, pitchGames: 0, pitchNRFI: 0 };
-        const awayBatNRFI = awayTeamData.batGames > 0 ? awayTeamData.batNRFI / awayTeamData.batGames : 0.70;
-        const homeBatNRFI = homeTeamData.batGames > 0 ? homeTeamData.batNRFI / homeTeamData.batGames : 0.70;
-        const awayPitchNRFI = pitcherToNRFI(awayPStats);
-        const homePitchNRFI = pitcherToNRFI(homePStats);
-        const nrfi = computeNRFI({ awayPitchNRFI, homePitchNRFI, awayBatNRFI, homeBatNRFI, parkFactor: pf, sampleAway: awayPStats?.starts || 0, sampleHome: homePStats?.starts || 0 });
+      const processed = todayGames.map(g => {
+        const aa = getAbbrev(g.teams?.away?.team?.name || "TBD");
+        const ha = getAbbrev(g.teams?.home?.team?.name || "TBD");
+        const ap = g.teams?.away?.probablePitcher, hp = g.teams?.home?.probablePitcher;
+        const v = g.venue?.name || "", pf = getParkFactor(v);
+        const st = g.status?.detailedState || "Scheduled";
+        let fir = null;
+        if (g.linescore?.innings?.length > 0) { const fi = g.linescore.innings[0]; fir = { awayRuns: fi.away?.runs ?? "?", homeRuns: fi.home?.runs ?? "?" }; }
+        const aps = ap?.id ? pMap[ap.id] : null, hps = hp?.id ? pMap[hp.id] : null;
+        const atd = teamStats[aa] || { batGames:0,batNRFI:0,pitchGames:0,pitchNRFI:0 };
+        const htd = teamStats[ha] || { batGames:0,batNRFI:0,pitchGames:0,pitchNRFI:0 };
+        const abn = atd.batGames > 0 ? atd.batNRFI/atd.batGames : 0.7;
+        const hbn = htd.batGames > 0 ? htd.batNRFI/htd.batGames : 0.7;
+        const apn = p2n(aps), hpn = p2n(hps);
+        const nrfi = computeNRFI({ awayPitchNRFI:apn, homePitchNRFI:hpn, awayBatNRFI:abn, homeBatNRFI:hbn, parkFactor:pf, sampleAway:aps?.starts||0, sampleHome:hps?.starts||0 });
         return {
-          gamePk: game.gamePk, awayTeam, homeTeam, awayAbbr, homeAbbr,
-          awayP: awayP ? { name: awayP.fullName, id: awayP.id, hand: awayP.pitchHand?.code || "?", ...awayPStats } : null,
-          homeP: homeP ? { name: homeP.fullName, id: homeP.id, hand: homeP.pitchHand?.code || "?", ...homePStats } : null,
-          venue, parkFactor: pf,
-          time: new Date(game.gameDate).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" }),
-          status, firstInningResult, nrfi, awayBatNRFI, homeBatNRFI, awayPitchNRFI, homePitchNRFI, awayTeamData, homeTeamData,
+          gamePk: g.gamePk, awayAbbr: aa, homeAbbr: ha,
+          awayP: ap ? { name: ap.fullName, hand: ap.pitchHand?.code||"?", ...aps } : null,
+          homeP: hp ? { name: hp.fullName, hand: hp.pitchHand?.code||"?", ...hps } : null,
+          venue: v, parkFactor: pf,
+          time: new Date(g.gameDate).toLocaleTimeString("en-US", { hour:"numeric", minute:"2-digit", timeZone:"America/New_York" }),
+          status: st, firstInningResult: fir, nrfi, awayBatNRFI: abn, homeBatNRFI: hbn, awayPitchNRFI: apn, homePitchNRFI: hpn, awayTeamData: atd, homeTeamData: htd,
         };
       });
-
       setGames(processed);
-      setTeamNRFI(teamStats);
-      setDataInfo({ gamesScanned, dateRange: `${thirtyAgo} to ${today}` });
+      setDataInfo({ gamesScanned });
       setLoading(false);
-    } catch (err) {
-      setError(err.message);
-      setLoading(false);
-    }
+    } catch (e) { setError(e.message); setLoading(false); }
   }, []);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const sorted = (() => {
-    let arr = [...games];
-    if (filter === "strong") arr = arr.filter((g) => g.nrfi >= 0.60);
-    if (filter === "upcoming") arr = arr.filter((g) => g.status === "Scheduled" || g.status === "Pre-Game");
-    if (filter === "live") arr = arr.filter((g) => g.status.includes("Progress"));
-    if (sortBy === "nrfi") arr.sort((a, b) => b.nrfi - a.nrfi);
-    else arr.sort((a, b) => new Date(a.time) - new Date(b.time));
-    return arr;
+    let a = [...games];
+    if (filter === "strong") a = a.filter(g => g.nrfi >= 0.60);
+    if (filter === "upcoming") a = a.filter(g => g.status === "Scheduled" || g.status === "Pre-Game");
+    if (filter === "live") a = a.filter(g => g.status.includes("Progress"));
+    if (sortBy === "nrfi") a.sort((x, y) => y.nrfi - x.nrfi);
+    else a.sort((x, y) => new Date(x.time) - new Date(y.time));
+    return a;
   })();
 
-  const avgNRFI = games.length > 0 ? (games.reduce((s, g) => s + g.nrfi, 0) / games.length * 100).toFixed(1) : "—";
-  const bestGame = games.length > 0 ? games.reduce((a, b) => a.nrfi > b.nrfi ? a : b) : null;
-  const strongPlays = games.filter((g) => g.nrfi >= 0.60).length;
+  const avgNRFI = games.length ? (games.reduce((s, g) => s + g.nrfi, 0) / games.length * 100).toFixed(1) : "—";
+  const best = games.length ? games.reduce((a, b) => a.nrfi > b.nrfi ? a : b) : null;
+  const strong = games.filter(g => g.nrfi >= 0.60).length;
   const todayStr = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+
+  const shell = { minHeight: "100vh", fontFamily: "var(--font-body)", WebkitFontSmoothing: "antialiased" };
 
   if (loading) return (
     <><style>{CSS}</style>
-    <div style={{ minHeight: "100vh", background: "var(--bg-root)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-sans)" }}>
+    <div style={{ ...shell, background: "var(--powder)", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ textAlign: "center" }}>
-        <div style={{ width: 40, height: 40, border: "2px solid var(--border)", borderTopColor: "var(--accent)", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 20px" }} />
-        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", marginBottom: 4 }}>Loading today's matchups</div>
-        <div style={{ fontSize: 12, color: "var(--text-muted)" }}>Analyzing pitcher data & first-inning trends</div>
+        <div style={{ width: 32, height: 32, border: "2.5px solid var(--powder-deep)", borderTopColor: "var(--blue)", borderRadius: "50%", animation: "spin 0.7s linear infinite", margin: "0 auto 20px" }} />
+        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", fontFamily: "var(--font-display)" }}>Loading today's slate</div>
+        <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 4 }}>Pulling pitcher logs & first-inning data</div>
       </div>
     </div></>
   );
 
   if (error) return (
     <><style>{CSS}</style>
-    <div style={{ minHeight: "100vh", background: "var(--bg-root)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "var(--font-sans)" }}>
+    <div style={{ ...shell, background: "var(--powder)", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ textAlign: "center", maxWidth: 340, padding: "0 24px" }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-primary)", marginBottom: 8 }}>Unable to load data</div>
-        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 20, lineHeight: 1.5 }}>{error}</div>
-        <button onClick={fetchData} style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", color: "var(--text-primary)", padding: "10px 24px", borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "var(--font-sans)" }}>Try again</button>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--ink)", fontFamily: "var(--font-display)", marginBottom: 8 }}>Couldn't load data</div>
+        <div style={{ fontSize: 12, color: "var(--ink-muted)", marginBottom: 20, lineHeight: 1.6 }}>{error}</div>
+        <button onClick={fetchData} style={{
+          background: "var(--blue)", border: "none", color: "#fff", padding: "10px 28px",
+          borderRadius: 8, fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "var(--font-body)",
+        }}>Try again</button>
       </div>
     </div></>
   );
 
   return (
     <><style>{CSS}</style>
-    <div style={{ minHeight: "100vh", background: "var(--bg-root)", color: "var(--text-primary)", fontFamily: "var(--font-sans)", WebkitFontSmoothing: "antialiased" }}>
+    <div style={{ ...shell, background: "var(--powder)", color: "var(--ink)" }}>
 
-      {/* Navbar */}
+      {/* Nav */}
       <nav style={{
-        borderBottom: "1px solid var(--border)", padding: "0 24px", height: 52,
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        position: "sticky", top: 0, background: "rgba(9,9,11,0.8)",
-        backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)", zIndex: 100,
+        background: "var(--white)", borderBottom: "1px solid var(--powder-mid)",
+        padding: "0 24px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between",
+        position: "sticky", top: 0, zIndex: 100,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{
-            width: 26, height: 26, borderRadius: 6,
-            background: "linear-gradient(135deg, #22c55e, #15803d)",
+            width: 30, height: 30, borderRadius: 8, background: "var(--blue)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 11, fontWeight: 700, color: "#000", fontFamily: "var(--font-mono)", letterSpacing: "-0.03em",
-          }}>IE</div>
-          <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-0.03em" }}>InningEdge</span>
-          <span style={{ fontSize: 10, color: "var(--text-dim)", fontWeight: 500, marginLeft: 2 }}>BETA</span>
+            fontFamily: "var(--font-display)", fontSize: 13, fontWeight: 700, color: "#fff",
+            letterSpacing: "-0.02em",
+          }}>ie</div>
+          <span style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 700, color: "var(--ink)", letterSpacing: "-0.03em" }}>
+            Inning<span style={{ color: "var(--blue)" }}>Edge</span>
+          </span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <span className="ie-nav-date">{todayStr}</span>
           <button onClick={fetchData} style={{
-            background: "none", border: "1px solid var(--border)", color: "var(--text-muted)",
-            padding: "5px 12px", borderRadius: 6, fontSize: 11, cursor: "pointer",
-            fontFamily: "var(--font-sans)", fontWeight: 500, transition: "all 0.15s",
-          }}
-          onMouseOver={e => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; e.currentTarget.style.color = "var(--text-secondary)"; }}
-          onMouseOut={e => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--text-muted)"; }}
-          >Refresh</button>
+            background: "var(--powder)", border: "1px solid var(--powder-mid)", color: "var(--ink-light)",
+            padding: "7px 14px", borderRadius: 8, fontSize: 12, cursor: "pointer",
+            fontFamily: "var(--font-body)", fontWeight: 500,
+          }}>Refresh</button>
         </div>
       </nav>
 
-      <div style={{ maxWidth: 860, margin: "0 auto", padding: "24px 16px 80px" }}>
+      <div style={{ maxWidth: 840, margin: "0 auto", padding: "24px 16px 80px" }}>
 
         {/* Stat cards */}
-        <div className="ie-stats-grid" style={{ background: "var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 24 }}>
+        <div className="ie-stats-row" style={{ marginBottom: 24 }}>
           {[
-            { label: "Avg NRFI", val: `${avgNRFI}%`, sub: `${games.length} games` },
-            { label: "Top Play", val: bestGame ? `${(bestGame.nrfi * 100).toFixed(1)}%` : "—", sub: bestGame ? `${bestGame.awayAbbr} @ ${bestGame.homeAbbr}` : "" },
-            { label: "Strong Plays", val: String(strongPlays), sub: "≥ 60%" },
+            { label: "Avg Probability", val: `${avgNRFI}%`, sub: `across ${games.length} games` },
+            { label: "Best Play", val: best ? `${(best.nrfi*100).toFixed(1)}%` : "—", sub: best ? `${best.awayAbbr} @ ${best.homeAbbr}` : "" },
+            { label: "Strong Plays", val: String(strong), sub: "≥ 60% NRFI" },
           ].map((s, i) => (
-            <div key={i} style={{ background: "var(--bg-surface)", padding: "16px 18px", animation: `fadeUp 0.35s ease ${i * 0.06}s both` }}>
-              <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{s.label}</div>
-              <div className="ie-stat-val" style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.04em", lineHeight: 1, fontFamily: "var(--font-mono)" }}>{s.val}</div>
-              <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>{s.sub}</div>
+            <div key={i} style={{
+              background: "var(--white)", borderRadius: 12, padding: "18px 20px",
+              border: "1px solid var(--powder-mid)",
+              animation: `enter 0.35s ease ${i * 0.06}s both`,
+            }}>
+              <div style={{ fontSize: 11, color: "var(--ink-faint)", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>{s.label}</div>
+              <div className="ie-stat-val" style={{ fontSize: 28, fontWeight: 700, letterSpacing: "-0.03em", lineHeight: 1, fontFamily: "var(--font-display)", color: "var(--ink)" }}>{s.val}</div>
+              <div style={{ fontSize: 11, color: "var(--ink-faint)", marginTop: 6, fontFamily: "var(--font-body)" }}>{s.sub}</div>
             </div>
           ))}
         </div>
 
         {/* Filters */}
-        <div className="ie-filter-bar">
-          <div className="ie-filter-pills">
+        <div className="ie-filter-row" style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 4, background: "var(--white)", borderRadius: 10, padding: 4, border: "1px solid var(--powder-mid)" }}>
             {[{ key: "all", l: "All" }, { key: "strong", l: "Strong" }, { key: "upcoming", l: "Upcoming" }, { key: "live", l: "Live" }].map(f => (
               <button key={f.key} onClick={() => setFilter(f.key)} style={{
-                background: filter === f.key ? "var(--bg-elevated)" : "transparent",
-                border: "none", color: filter === f.key ? "var(--text-primary)" : "var(--text-muted)",
-                padding: "5px 14px", borderRadius: 6, fontSize: 12, cursor: "pointer",
-                fontWeight: filter === f.key ? 600 : 400, fontFamily: "var(--font-sans)", transition: "all 0.15s",
+                background: filter === f.key ? "var(--powder)" : "transparent",
+                border: "none", color: filter === f.key ? "var(--ink)" : "var(--ink-faint)",
+                padding: "7px 16px", borderRadius: 7, fontSize: 12, cursor: "pointer",
+                fontWeight: filter === f.key ? 600 : 400, fontFamily: "var(--font-body)",
               }}>
-                {f.key === "live" && <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "#ef4444", marginRight: 5, animation: "pulse 2s infinite" }} />}
+                {f.key === "live" && <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: "50%", background: "#d93636", marginRight: 6, animation: "pulse 2s infinite" }} />}
                 {f.l}
               </button>
             ))}
           </div>
           <button onClick={() => setSortBy(sortBy === "nrfi" ? "time" : "nrfi")} style={{
-            background: "var(--bg-surface)", border: "1px solid var(--border)", color: "var(--text-muted)",
-            padding: "5px 14px", borderRadius: 8, fontSize: 11, cursor: "pointer",
-            fontFamily: "var(--font-sans)", fontWeight: 500, transition: "all 0.15s",
-          }}
-          onMouseOver={e => e.currentTarget.style.borderColor = "rgba(255,255,255,0.12)"}
-          onMouseOut={e => e.currentTarget.style.borderColor = "var(--border)"}
-          >Sort: {sortBy === "nrfi" ? "Probability" : "Game Time"}</button>
+            background: "var(--white)", border: "1px solid var(--powder-mid)", color: "var(--ink-muted)",
+            padding: "7px 16px", borderRadius: 8, fontSize: 12, cursor: "pointer",
+            fontFamily: "var(--font-body)", fontWeight: 500,
+          }}>Sort: {sortBy === "nrfi" ? "Probability" : "Game Time"}</button>
         </div>
 
         {/* Empty */}
         {sorted.length === 0 && (
-          <div style={{ textAlign: "center", padding: "56px 20px", color: "var(--text-muted)", fontSize: 13, borderRadius: 12, border: "1px dashed var(--border)" }}>
+          <div style={{ textAlign: "center", padding: "56px 20px", color: "var(--ink-faint)", fontSize: 13, borderRadius: 12, border: "1px dashed var(--powder-deep)", background: "var(--white)" }}>
             No games match this filter.
           </div>
         )}
 
         {/* Game cards */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {sorted.map((game, idx) => {
             const conf = getConfidence(game.nrfi);
             const pct = (game.nrfi * 100).toFixed(1);
@@ -460,111 +410,101 @@ export default function NRFILive() {
 
             let resultTag = null;
             if (isFinal && game.firstInningResult) {
-              const wasNRFI = game.firstInningResult.awayRuns === 0 && game.firstInningResult.homeRuns === 0;
-              resultTag = { text: wasNRFI ? "NRFI" : "YRFI", hit: wasNRFI };
+              const hit = game.firstInningResult.awayRuns === 0 && game.firstInningResult.homeRuns === 0;
+              resultTag = { text: hit ? "NRFI" : "YRFI", hit };
             }
 
             return (
               <div key={game.gamePk} style={{
-                background: "var(--bg-surface)", border: `1px solid ${expanded ? "rgba(255,255,255,0.1)" : "var(--border)"}`,
-                borderRadius: 10, overflow: "hidden", cursor: "pointer",
-                transition: "border-color 0.2s", animation: `fadeUp 0.35s ease ${idx * 0.03}s both`,
+                background: "var(--white)", border: `1px solid ${expanded ? "var(--powder-deep)" : "var(--powder-mid)"}`,
+                borderRadius: 14, overflow: "hidden", cursor: "pointer",
+                transition: "border-color 0.2s, box-shadow 0.2s",
+                boxShadow: expanded ? "0 2px 12px rgba(74,144,196,0.08)" : "0 1px 3px rgba(0,0,0,0.03)",
+                animation: `enter 0.3s ease ${idx * 0.03}s both`,
               }}
               onClick={() => setExpandedGame(expanded ? null : game.gamePk)}
-              onMouseOver={e => { if (!expanded) e.currentTarget.style.borderColor = "rgba(255,255,255,0.09)"; }}
-              onMouseOut={e => { if (!expanded) e.currentTarget.style.borderColor = "var(--border)"; }}
               >
-                <div style={{ padding: "14px 18px" }}>
-                  {/* Main row */}
+                <div className="ie-card-inner">
                   <div className="ie-card-main">
-                    {/* Teams + pitchers */}
-                    <div className="ie-teams">
-                      {/* Away */}
-                      <div className="ie-team-block">
+                    {/* Teams */}
+                    <div className="ie-matchup">
+                      <div className="ie-team-col">
                         <div style={{
-                          width: 30, height: 30, borderRadius: 7, flexShrink: 0,
-                          background: TEAM_COLORS[game.awayAbbr] || "#333",
+                          width: 34, height: 34, borderRadius: 8, flexShrink: 0,
+                          background: TEAM_COLORS[game.awayAbbr] || "#6b7280",
                           display: "flex", alignItems: "center", justifyContent: "center",
-                          fontSize: 9, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
+                          fontSize: 10, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
+                          letterSpacing: "-0.02em",
                         }}>{game.awayAbbr}</div>
                         <div style={{ minWidth: 0, flex: 1 }}>
-                          <div className="ie-pitcher-name">
-                            {game.awayP?.name || "TBD"}
-                          </div>
-                          {game.awayP && (
-                            <div className="ie-pitcher-stats">
-                              {game.awayP.era?.toFixed(2)} ERA · {game.awayP.whip?.toFixed(2)}
-                            </div>
-                          )}
+                          <div className="ie-p-name">{game.awayP?.name || "TBD"}</div>
+                          {game.awayP && <div className="ie-p-stats">{game.awayP.era?.toFixed(2)} ERA · {game.awayP.whip?.toFixed(2)} WHIP</div>}
                         </div>
                       </div>
 
-                      <span className="ie-at-symbol">@</span>
+                      <span className="ie-at">at</span>
 
-                      {/* Home */}
-                      <div className="ie-team-block">
+                      <div className="ie-team-col">
                         <div style={{
-                          width: 30, height: 30, borderRadius: 7, flexShrink: 0,
-                          background: TEAM_COLORS[game.homeAbbr] || "#333",
+                          width: 34, height: 34, borderRadius: 8, flexShrink: 0,
+                          background: TEAM_COLORS[game.homeAbbr] || "#6b7280",
                           display: "flex", alignItems: "center", justifyContent: "center",
-                          fontSize: 9, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
+                          fontSize: 10, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
+                          letterSpacing: "-0.02em",
                         }}>{game.homeAbbr}</div>
                         <div style={{ minWidth: 0, flex: 1 }}>
-                          <div className="ie-pitcher-name">
-                            {game.homeP?.name || "TBD"}
-                          </div>
-                          {game.homeP && (
-                            <div className="ie-pitcher-stats">
-                              {game.homeP.era?.toFixed(2)} ERA · {game.homeP.whip?.toFixed(2)}
-                            </div>
-                          )}
+                          <div className="ie-p-name">{game.homeP?.name || "TBD"}</div>
+                          {game.homeP && <div className="ie-p-stats">{game.homeP.era?.toFixed(2)} ERA · {game.homeP.whip?.toFixed(2)} WHIP</div>}
                         </div>
                       </div>
                     </div>
 
-                    {/* Right: status + gauge */}
-                    <div className="ie-right-col">
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
+                    {/* Score column */}
+                    <div className="ie-score-col">
+                      <div>
                         <span style={{
                           fontSize: 10, fontWeight: 500, fontFamily: "var(--font-mono)",
-                          color: isLive ? "#ef4444" : isFinal ? "var(--text-dim)" : "var(--text-muted)",
-                          animation: isLive ? "pulse 2s ease infinite" : "none",
+                          color: isLive ? "#d93636" : isFinal ? "var(--ink-faint)" : "var(--ink-muted)",
+                          animation: isLive ? "pulse 2s infinite" : "none",
                         }}>
                           {isLive ? "● LIVE" : isFinal ? "FINAL" : game.time + " ET"}
                         </span>
                         {resultTag && (
-                          <span style={{
-                            fontSize: 10, fontWeight: 600, fontFamily: "var(--font-mono)",
-                            color: resultTag.hit ? "#22c55e" : "#ef4444",
+                          <div style={{
+                            fontSize: 11, fontWeight: 600, fontFamily: "var(--font-mono)", marginTop: 2,
+                            color: resultTag.hit ? "#0d9255" : "#c43a3a",
                           }}>
                             {resultTag.text} {game.firstInningResult.awayRuns}-{game.firstInningResult.homeRuns}
-                          </span>
+                          </div>
                         )}
                       </div>
-
-                      <div style={{ position: "relative", width: 58, height: 58 }}>
-                        <CircleGauge value={parseFloat(pct)} color={conf.color} />
-                        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-                          <div style={{ fontSize: 15, fontWeight: 700, color: conf.color, fontFamily: "var(--font-mono)", lineHeight: 1 }}>{pct}</div>
-                          <div style={{ fontSize: 7, fontWeight: 600, color: conf.color, letterSpacing: "0.1em", marginTop: 1 }}>{conf.label}</div>
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ fontSize: 26, fontWeight: 800, color: conf.color, lineHeight: 1, fontFamily: "var(--font-display)", letterSpacing: "-0.02em" }}>
+                          {pct}<span style={{ fontSize: 14, fontWeight: 600 }}>%</span>
+                        </div>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: conf.color, marginTop: 2, fontFamily: "var(--font-mono)", letterSpacing: "0.04em" }}>
+                          {conf.label}
+                        </div>
+                        <div style={{ marginTop: 6, width: 72 }}>
+                          <ProbBar value={parseFloat(pct)} color={conf.color} />
                         </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Meta strip */}
-                  <div className="ie-meta">
-                    <span className="ie-meta-venue">{game.venue}</span>
-                    <span className="ie-meta-venue">·</span>
-                    <span className="ie-meta-venue" style={{ fontFamily: "var(--font-mono)" }}>PF {game.parkFactor.toFixed(2)}</span>
+                  {/* Meta */}
+                  <div className="ie-meta-row">
+                    <span className="ie-meta-item">{game.venue}</span>
+                    <span className="ie-meta-item">·</span>
+                    <span className="ie-meta-mono">PF {game.parkFactor.toFixed(2)}</span>
                     <div style={{ flex: 1 }} />
-                    <span className="ie-meta-k9-group">
-                      {game.awayP && <span className="ie-meta-k9">{game.awayP.k9?.toFixed(1)} K/9</span>}
-                      {game.awayP && game.homeP && <span style={{ fontSize: 10, color: "var(--text-dim)", margin: "0 5px" }}>·</span>}
-                      {game.homeP && <span className="ie-meta-k9">{game.homeP.k9?.toFixed(1)} K/9</span>}
+                    <span className="ie-k9-group">
+                      {game.awayP && <span className="ie-meta-mono">{game.awayP.k9?.toFixed(1)} K/9</span>}
+                      {game.awayP && game.homeP && <span className="ie-meta-item" style={{ margin: "0 3px" }}>·</span>}
+                      {game.homeP && <span className="ie-meta-mono">{game.homeP.k9?.toFixed(1)} K/9</span>}
                     </span>
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--text-dim)" strokeWidth="1.5"
-                      style={{ transform: expanded ? "rotate(180deg)" : "rotate(0)", transition: "transform 0.2s", marginLeft: 4 }}>
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--ink-faint)" strokeWidth="1.5"
+                      style={{ transform: expanded ? "rotate(180deg)" : "rotate(0)", transition: "transform 0.2s" }}>
                       <path d="M2 4l3 3 3-3" strokeLinecap="round" strokeLinejoin="round" />
                     </svg>
                   </div>
@@ -573,20 +513,22 @@ export default function NRFILive() {
                   {expanded && (
                     <div className="ie-expanded">
                       {[
-                        { abbr: game.awayAbbr, side: "Away", pitchNRFI: game.awayPitchNRFI, batNRFI: game.awayBatNRFI, td: game.awayTeamData, p: game.awayP },
-                        { abbr: game.homeAbbr, side: "Home", pitchNRFI: game.homePitchNRFI, batNRFI: game.homeBatNRFI, td: game.homeTeamData, p: game.homeP },
-                      ].map((t) => (
+                        { abbr: game.awayAbbr, side: "Away", pn: game.awayPitchNRFI, bn: game.awayBatNRFI, td: game.awayTeamData, p: game.awayP },
+                        { abbr: game.homeAbbr, side: "Home", pn: game.homePitchNRFI, bn: game.homeBatNRFI, td: game.homeTeamData, p: game.homeP },
+                      ].map(t => (
                         <div key={t.side}>
-                          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-muted)", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 8 }}>
-                            {t.abbr} — {t.side}
-                          </div>
-                          <StatRow label="Pitch Hold Rate" value={`${(t.pitchNRFI * 100).toFixed(1)}%`} />
-                          <StatRow label="Batting NRFI" value={`${(t.batNRFI * 100).toFixed(1)}%`} detail={`${t.td.batNRFI}/${t.td.batGames}`} />
+                          <div style={{
+                            fontSize: 11, fontWeight: 600, color: "var(--blue-dark)",
+                            letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: 10,
+                            fontFamily: "var(--font-body)",
+                          }}>{t.abbr} — {t.side}</div>
+                          <StatLine label="Pitch Hold Rate" value={`${(t.pn*100).toFixed(1)}%`} />
+                          <StatLine label="Batting NRFI" value={`${(t.bn*100).toFixed(1)}%`} detail={`${t.td.batNRFI}/${t.td.batGames}`} />
                           {t.p && <>
-                            <StatRow label="Starts" value={t.p.starts || 0} />
-                            <StatRow label="IP" value={t.p.ip?.toFixed(1) || "—"} />
-                            <StatRow label="BB/9" value={t.p.bb9?.toFixed(1) || "—"} />
-                            <StatRow label="K/9" value={t.p.k9?.toFixed(1) || "—"} />
+                            <StatLine label="Starts" value={t.p.starts||0} />
+                            <StatLine label="IP" value={t.p.ip?.toFixed(1)||"—"} />
+                            <StatLine label="BB/9" value={t.p.bb9?.toFixed(1)||"—"} />
+                            <StatLine label="K/9" value={t.p.k9?.toFixed(1)||"—"} />
                           </>}
                         </div>
                       ))}
