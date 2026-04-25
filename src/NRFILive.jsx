@@ -145,6 +145,52 @@ body { background: var(--bg-root); }
 }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Mobile-first responsive */
+.ie-stats-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 1px; }
+.ie-card-main { display: flex; align-items: center; justify-content: space-between; }
+.ie-teams { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.ie-team-block { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ie-pitcher-stats { font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 1px; }
+.ie-right-col { display: flex; align-items: center; gap: 14px; flex-shrink: 0; margin-left: 12px; }
+.ie-meta { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); flex-wrap: wrap; }
+.ie-meta-venue { font-size: 10px; color: var(--text-dim); }
+.ie-meta-k9 { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
+.ie-expanded { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.ie-nav-date { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+.ie-filter-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+.ie-filter-pills { display: flex; gap: 3px; background: var(--bg-surface); border-radius: 8px; padding: 3px; border: 1px solid var(--border); }
+.ie-pitcher-name { font-size: 13px; font-weight: 600; color: var(--text-primary); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ie-at-symbol { font-size: 10px; color: var(--text-dim); font-weight: 600; flex-shrink: 0; }
+
+@media (max-width: 640px) {
+  .ie-stats-grid { grid-template-columns: repeat(3,1fr); }
+  .ie-stats-grid > div { padding: 12px 10px !important; }
+  .ie-stats-grid .ie-stat-val { font-size: 20px !important; }
+
+  .ie-card-main { flex-direction: column; align-items: stretch; gap: 12px; }
+  .ie-teams { flex-direction: column; gap: 6px; }
+  .ie-team-block { width: 100%; }
+  .ie-at-symbol { display: none; }
+  .ie-right-col { margin-left: 0; justify-content: space-between; width: 100%;
+    padding-top: 10px; border-top: 1px solid var(--border-subtle); }
+  .ie-pitcher-name { font-size: 12px; }
+  .ie-pitcher-stats { font-size: 9px; }
+
+  .ie-meta { gap: 6px; }
+  .ie-meta-venue { flex-basis: 100%; margin-bottom: 2px; }
+  .ie-meta-k9-group { display: none; }
+
+  .ie-expanded { grid-template-columns: 1fr; gap: 16px; }
+
+  .ie-nav-date { display: none; }
+  .ie-filter-pills { overflow-x: auto; flex-shrink: 0; }
+  .ie-filter-pills button { padding: 5px 10px !important; font-size: 11px !important; }
+}
+
+@media (max-width: 380px) {
+  .ie-stats-grid { grid-template-columns: 1fr; }
+}
 `;
 
 export default function NRFILive() {
@@ -342,7 +388,7 @@ export default function NRFILive() {
           <span style={{ fontSize: 10, color: "var(--text-dim)", fontWeight: 500, marginLeft: 2 }}>BETA</span>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <span style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{todayStr}</span>
+          <span className="ie-nav-date">{todayStr}</span>
           <button onClick={fetchData} style={{
             background: "none", border: "1px solid var(--border)", color: "var(--text-muted)",
             padding: "5px 12px", borderRadius: 6, fontSize: 11, cursor: "pointer",
@@ -357,7 +403,7 @@ export default function NRFILive() {
       <div style={{ maxWidth: 860, margin: "0 auto", padding: "24px 16px 80px" }}>
 
         {/* Stat cards */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1, background: "var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 24 }}>
+        <div className="ie-stats-grid" style={{ background: "var(--border)", borderRadius: 10, overflow: "hidden", marginBottom: 24 }}>
           {[
             { label: "Avg NRFI", val: `${avgNRFI}%`, sub: `${games.length} games` },
             { label: "Top Play", val: bestGame ? `${(bestGame.nrfi * 100).toFixed(1)}%` : "—", sub: bestGame ? `${bestGame.awayAbbr} @ ${bestGame.homeAbbr}` : "" },
@@ -365,15 +411,15 @@ export default function NRFILive() {
           ].map((s, i) => (
             <div key={i} style={{ background: "var(--bg-surface)", padding: "16px 18px", animation: `fadeUp 0.35s ease ${i * 0.06}s both` }}>
               <div style={{ fontSize: 10, color: "var(--text-muted)", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>{s.label}</div>
-              <div style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.04em", lineHeight: 1, fontFamily: "var(--font-mono)" }}>{s.val}</div>
+              <div className="ie-stat-val" style={{ fontSize: 24, fontWeight: 700, letterSpacing: "-0.04em", lineHeight: 1, fontFamily: "var(--font-mono)" }}>{s.val}</div>
               <div style={{ fontSize: 11, color: "var(--text-dim)", marginTop: 4 }}>{s.sub}</div>
             </div>
           ))}
         </div>
 
         {/* Filters */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-          <div style={{ display: "flex", gap: 3, background: "var(--bg-surface)", borderRadius: 8, padding: 3, border: "1px solid var(--border)" }}>
+        <div className="ie-filter-bar">
+          <div className="ie-filter-pills">
             {[{ key: "all", l: "All" }, { key: "strong", l: "Strong" }, { key: "upcoming", l: "Upcoming" }, { key: "live", l: "Live" }].map(f => (
               <button key={f.key} onClick={() => setFilter(f.key)} style={{
                 background: filter === f.key ? "var(--bg-elevated)" : "transparent",
@@ -430,45 +476,45 @@ export default function NRFILive() {
               >
                 <div style={{ padding: "14px 18px" }}>
                   {/* Main row */}
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div className="ie-card-main">
                     {/* Teams + pitchers */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+                    <div className="ie-teams">
                       {/* Away */}
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <div className="ie-team-block">
                         <div style={{
                           width: 30, height: 30, borderRadius: 7, flexShrink: 0,
                           background: TEAM_COLORS[game.awayAbbr] || "#333",
                           display: "flex", alignItems: "center", justifyContent: "center",
                           fontSize: 9, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
                         }}>{game.awayAbbr}</div>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div className="ie-pitcher-name">
                             {game.awayP?.name || "TBD"}
                           </div>
                           {game.awayP && (
-                            <div style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 1 }}>
+                            <div className="ie-pitcher-stats">
                               {game.awayP.era?.toFixed(2)} ERA · {game.awayP.whip?.toFixed(2)}
                             </div>
                           )}
                         </div>
                       </div>
 
-                      <span style={{ fontSize: 10, color: "var(--text-dim)", fontWeight: 600, flexShrink: 0 }}>@</span>
+                      <span className="ie-at-symbol">@</span>
 
                       {/* Home */}
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                      <div className="ie-team-block">
                         <div style={{
                           width: 30, height: 30, borderRadius: 7, flexShrink: 0,
                           background: TEAM_COLORS[game.homeAbbr] || "#333",
                           display: "flex", alignItems: "center", justifyContent: "center",
                           fontSize: 9, fontWeight: 700, color: "#fff", fontFamily: "var(--font-mono)",
                         }}>{game.homeAbbr}</div>
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", lineHeight: 1.2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div className="ie-pitcher-name">
                             {game.homeP?.name || "TBD"}
                           </div>
                           {game.homeP && (
-                            <div style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 1 }}>
+                            <div className="ie-pitcher-stats">
                               {game.homeP.era?.toFixed(2)} ERA · {game.homeP.whip?.toFixed(2)}
                             </div>
                           )}
@@ -477,7 +523,7 @@ export default function NRFILive() {
                     </div>
 
                     {/* Right: status + gauge */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 14, flexShrink: 0, marginLeft: 12 }}>
+                    <div className="ie-right-col">
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3 }}>
                         <span style={{
                           fontSize: 10, fontWeight: 500, fontFamily: "var(--font-mono)",
@@ -507,14 +553,16 @@ export default function NRFILive() {
                   </div>
 
                   {/* Meta strip */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border-subtle)" }}>
-                    <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{game.venue}</span>
-                    <span style={{ fontSize: 10, color: "var(--text-dim)" }}>·</span>
-                    <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>PF {game.parkFactor.toFixed(2)}</span>
+                  <div className="ie-meta">
+                    <span className="ie-meta-venue">{game.venue}</span>
+                    <span className="ie-meta-venue">·</span>
+                    <span className="ie-meta-venue" style={{ fontFamily: "var(--font-mono)" }}>PF {game.parkFactor.toFixed(2)}</span>
                     <div style={{ flex: 1 }} />
-                    {game.awayP && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{game.awayP.k9?.toFixed(1)} K/9</span>}
-                    {game.awayP && game.homeP && <span style={{ fontSize: 10, color: "var(--text-dim)" }}>·</span>}
-                    {game.homeP && <span style={{ fontSize: 10, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{game.homeP.k9?.toFixed(1)} K/9</span>}
+                    <span className="ie-meta-k9-group">
+                      {game.awayP && <span className="ie-meta-k9">{game.awayP.k9?.toFixed(1)} K/9</span>}
+                      {game.awayP && game.homeP && <span style={{ fontSize: 10, color: "var(--text-dim)", margin: "0 5px" }}>·</span>}
+                      {game.homeP && <span className="ie-meta-k9">{game.homeP.k9?.toFixed(1)} K/9</span>}
+                    </span>
                     <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="var(--text-dim)" strokeWidth="1.5"
                       style={{ transform: expanded ? "rotate(180deg)" : "rotate(0)", transition: "transform 0.2s", marginLeft: 4 }}>
                       <path d="M2 4l3 3 3-3" strokeLinecap="round" strokeLinejoin="round" />
@@ -523,7 +571,7 @@ export default function NRFILive() {
 
                   {/* Expanded */}
                   {expanded && (
-                    <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+                    <div className="ie-expanded">
                       {[
                         { abbr: game.awayAbbr, side: "Away", pitchNRFI: game.awayPitchNRFI, batNRFI: game.awayBatNRFI, td: game.awayTeamData, p: game.awayP },
                         { abbr: game.homeAbbr, side: "Home", pitchNRFI: game.homePitchNRFI, batNRFI: game.homeBatNRFI, td: game.homeTeamData, p: game.homeP },
