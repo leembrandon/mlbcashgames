@@ -55,37 +55,70 @@ function getParkFactor(venueName) {
   return 1.0;
 }
 
-// Compute NRFI from actual data
-// awayPitcherNRFI = fraction of starts where the pitcher held opponents scoreless in 1st
-// homePitcherNRFI = same
-// teamNRFI rates (batting side — how often does the TEAM fail to score in the 1st)
+// === NRFI MODEL v2 ===
+// League-average probability of scoring 0 runs in a half-inning ≈ 73.5% (historical MLB)
+// That means P(NRFI for a full inning) ≈ 0.735 * 0.735 ≈ 54% at baseline — but that's
+// the LEAGUE AVERAGE, including bad pitchers. Good matchups should be 65-80%.
+//
+// The model works in log-odds space to avoid the compression problem of multiplying
+// two sub-1 probabilities together. Instead we:
+//   1. Start from a league-average baseline half-inning NRFI rate
+//   2. Apply pitcher quality as a multiplier on the run expectancy
+//   3. Apply team batting tendency as a secondary adjustment
+//   4. Apply park factor
+//   5. Combine the two half-innings
+
+const HALF_INNING_NRFI_BASELINE = 0.735; // ~73.5% chance no runs score in any half-inning
+
+// Convert probability to log-odds and back
+function toLogOdds(p) { return Math.log(p / (1 - p)); }
+function fromLogOdds(lo) { return 1 / (1 + Math.exp(-lo)); }
+
+// Light Bayesian blend — less aggressive shrinkage than v1
+function bayesBlend(rate, n, prior, priorWeight) {
+  if (n < 2) return prior;
+  return (rate * n + prior * priorWeight) / (n + priorWeight);
+}
+
 function computeNRFI({ awayPitchNRFI, homePitchNRFI, awayBatNRFI, homeBatNRFI, parkFactor, sampleAway, sampleHome }) {
-  // Bayesian blend with league average (~70% NRFI rate)
-  const LEAGUE_AVG = 0.70;
-  const blendPitch = (rate, n) => (n < 3) ? LEAGUE_AVG : (rate * Math.min(n, 30) + LEAGUE_AVG * 5) / (Math.min(n, 30) + 5);
-  const blendBat = (rate, n) => (n < 5) ? LEAGUE_AVG : (rate * Math.min(n, 30) + LEAGUE_AVG * 5) / (Math.min(n, 30) + 5);
+  // Blend pitcher hold rates with lighter prior (weight=2 instead of 5)
+  const awayPitchAdj = bayesBlend(awayPitchNRFI, sampleAway, HALF_INNING_NRFI_BASELINE, 2);
+  const homePitchAdj = bayesBlend(homePitchNRFI, sampleHome, HALF_INNING_NRFI_BASELINE, 2);
 
-  const awayPitchAdj = blendPitch(awayPitchNRFI, sampleAway);
-  const homePitchAdj = blendPitch(homePitchNRFI, sampleHome);
-  const awayBatAdj = blendBat(awayBatNRFI, 20);
-  const homeBatAdj = blendBat(homeBatNRFI, 20);
+  // Team batting NRFI — already has decent sample size from 30 days
+  const awayBatAdj = bayesBlend(awayBatNRFI, 20, HALF_INNING_NRFI_BASELINE, 3);
+  const homeBatAdj = bayesBlend(homeBatNRFI, 20, HALF_INNING_NRFI_BASELINE, 3);
 
-  // P(no run top 1st) blends away pitcher holding + home team not scoring
-  // P(no run bot 1st) blends home pitcher holding + away team not scoring
-  const pNoRunTop = (awayPitchAdj + homeBatAdj) / 2;
-  const pNoRunBot = (homePitchAdj + awayBatAdj) / 2;
+  // Work in log-odds space to combine signals without compression
+  const baseLogOdds = toLogOdds(HALF_INNING_NRFI_BASELINE);
 
-  // Park factor adjustment (higher PF = more runs = lower NRFI)
-  const parkAdj = 1 + (1 - parkFactor) * 0.3;
+  // Top of 1st: home pitcher faces away batters
+  // Pitcher is 65% of the signal, batting lineup is 35%
+  const topPitchDelta = toLogOdds(homePitchAdj) - baseLogOdds;
+  const topBatDelta = toLogOdds(awayBatAdj) - baseLogOdds;
+  const topLogOdds = baseLogOdds + topPitchDelta * 0.65 + topBatDelta * 0.35;
+  const pNoRunTop = fromLogOdds(topLogOdds);
 
-  const nrfi = pNoRunTop * pNoRunBot * parkAdj;
-  return Math.min(0.92, Math.max(0.30, nrfi));
+  // Bottom of 1st: away pitcher faces home batters
+  const botPitchDelta = toLogOdds(awayPitchAdj) - baseLogOdds;
+  const botBatDelta = toLogOdds(homeBatAdj) - baseLogOdds;
+  const botLogOdds = baseLogOdds + botPitchDelta * 0.65 + botBatDelta * 0.35;
+  const pNoRunBot = fromLogOdds(botLogOdds);
+
+  // Park factor adjustment — applied in log-odds space
+  // PF > 1 = hitter-friendly (lower NRFI), PF < 1 = pitcher-friendly (higher NRFI)
+  const parkShift = (1 - parkFactor) * 0.6; // stronger park influence
+
+  const fullGameLogOdds = toLogOdds(pNoRunTop) + toLogOdds(pNoRunBot) - baseLogOdds + parkShift;
+  const nrfi = fromLogOdds(fullGameLogOdds);
+
+  return Math.min(0.88, Math.max(0.32, nrfi));
 }
 
 function getConfidence(nrfi) {
-  if (nrfi >= 0.72) return { text: "STRONG", color: "#10b981" };
-  if (nrfi >= 0.62) return { text: "LEAN", color: "#3b82f6" };
-  if (nrfi >= 0.52) return { text: "TOSS-UP", color: "#f59e0b" };
+  if (nrfi >= 0.68) return { text: "STRONG", color: "#10b981" };
+  if (nrfi >= 0.58) return { text: "LEAN", color: "#3b82f6" };
+  if (nrfi >= 0.50) return { text: "TOSS-UP", color: "#f59e0b" };
   return { text: "FADE", color: "#ef4444" };
 }
 
@@ -237,16 +270,27 @@ export default function NRFILive() {
         const awayBatNRFI = awayTeamData.batGames > 0 ? awayTeamData.batNRFI / awayTeamData.batGames : 0.70;
         const homeBatNRFI = homeTeamData.batGames > 0 ? homeTeamData.batNRFI / homeTeamData.batGames : 0.70;
 
-        // Use pitcher ERA to estimate their 1st inning hold rate
-        // Lower ERA = higher probability of holding
+        // Convert pitcher season stats to a first-inning hold probability
+        // Key insight: ERA is runs per 9 innings, so run expectancy per inning = ERA/9
+        // But 1st innings are typically ~10% better for starters (fresh arm, set lineup)
+        // P(0 runs in 1 inning) ≈ e^(-runExpectancy) using Poisson approximation
         const pitcherToNRFI = (stats) => {
-          if (!stats) return 0.70;
-          // ERA-based: P(no run in 1 inning) ≈ 1 - (ERA/9)
-          // Adjusted by K-rate bonus and walk penalty
-          const baseHold = 1 - (stats.era / 9);
-          const kBonus = Math.min(0.05, (stats.k9 - 7) * 0.01);
-          const bbPenalty = Math.max(0, (stats.bb9 - 3) * 0.015);
-          return Math.min(0.92, Math.max(0.50, baseHold + kBonus - bbPenalty));
+          if (!stats) return HALF_INNING_NRFI_BASELINE;
+          // Run expectancy per inning from ERA
+          const runsPerInning = stats.era / 9;
+          // First-inning discount: starters do ~10% better in the 1st
+          const firstInningRE = runsPerInning * 0.90;
+          // K-rate bonus: high-K pitchers suppress contact chains
+          const kFactor = 1 - Math.min(0.08, Math.max(-0.04, (stats.k9 - 8.5) * 0.015));
+          // Walk penalty: walks in the 1st are deadly for NRFI
+          const bbFactor = 1 + Math.max(0, (stats.bb9 - 2.8) * 0.03);
+          // WHIP adjustment: high WHIP = more baserunners = more run risk
+          const whipFactor = 1 + Math.max(0, (stats.whip - 1.20) * 0.08);
+          
+          const adjRE = firstInningRE * kFactor * bbFactor * whipFactor;
+          // Poisson P(0 runs) = e^(-lambda)
+          const holdRate = Math.exp(-adjRE);
+          return Math.min(0.93, Math.max(0.45, holdRate));
         };
 
         const awayPitchNRFI = pitcherToNRFI(awayPStats);
@@ -290,7 +334,7 @@ export default function NRFILive() {
 
   const sorted = (() => {
     let arr = [...games];
-    if (filter === "strong") arr = arr.filter((g) => g.nrfi >= 0.65);
+    if (filter === "strong") arr = arr.filter((g) => g.nrfi >= 0.60);
     if (filter === "upcoming") arr = arr.filter((g) => g.status === "Scheduled" || g.status === "Pre-Game");
     if (filter === "live") arr = arr.filter((g) => g.status.includes("Progress"));
     if (sortBy === "nrfi") arr.sort((a, b) => b.nrfi - a.nrfi);
@@ -300,7 +344,7 @@ export default function NRFILive() {
 
   const avgNRFI = games.length > 0 ? (games.reduce((s, g) => s + g.nrfi, 0) / games.length * 100).toFixed(1) : "—";
   const bestGame = games.length > 0 ? games.reduce((a, b) => a.nrfi > b.nrfi ? a : b) : null;
-  const strongPlays = games.filter((g) => g.nrfi >= 0.65).length;
+  const strongPlays = games.filter((g) => g.nrfi >= 0.60).length;
 
   const s = {
     page: { minHeight: "100vh", background: "#080c14", color: "#e2e8f0", fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', monospace", padding: 0 },
@@ -364,7 +408,7 @@ export default function NRFILive() {
           {[
             { label: "AVG NRFI %", value: `${avgNRFI}%`, sub: `${games.length} games today` },
             { label: "BEST PLAY", value: bestGame ? `${(bestGame.nrfi * 100).toFixed(1)}%` : "—", sub: bestGame ? `${bestGame.awayAbbr}@${bestGame.homeAbbr}` : "" },
-            { label: "STRONG PLAYS", value: strongPlays, sub: "≥65% probability" },
+            { label: "STRONG PLAYS", value: strongPlays, sub: "≥60% probability" },
           ].map((c, i) => (
             <div key={i} style={s.statBox}>
               <div style={{ fontSize: 8, color: "#64748b", letterSpacing: "0.1em", marginBottom: 5, fontWeight: 600 }}>{c.label}</div>
@@ -520,7 +564,7 @@ export default function NRFILive() {
                       </div>
                     </div>
                     <div style={{ fontSize: 9, color: "#334155", marginTop: 8 }}>
-                      Formula: P(NRFI) = P(no run top 1st) × P(no run bot 1st) × park adj · Top 1st blends away pitcher hold rate + home team batting NRFI · Park factor {game.parkFactor.toFixed(2)} ({game.parkFactor > 1.03 ? "hitter-friendly" : game.parkFactor < 0.97 ? "pitcher-friendly" : "neutral"})
+                      Model v2: Poisson 1st-inning hold rate from ERA/WHIP/K9/BB9 · Combined in log-odds space (65% pitcher / 35% lineup weight) · Park factor {game.parkFactor.toFixed(2)} ({game.parkFactor > 1.03 ? "hitter-friendly" : game.parkFactor < 0.97 ? "pitcher-friendly" : "neutral"}) · Bayesian prior weight: 2
                     </div>
                   </div>
                 )}
@@ -534,10 +578,10 @@ export default function NRFILive() {
           <div style={{ fontSize: 9, color: "#64748b", letterSpacing: "0.1em", marginBottom: 8, fontWeight: 700 }}>DATA SOURCES & METHODOLOGY</div>
           <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10 }}>
             {[
-              { label: "STRONG", color: "#10b981", desc: "≥72%" },
-              { label: "LEAN", color: "#3b82f6", desc: "62–71%" },
-              { label: "TOSS-UP", color: "#f59e0b", desc: "52–61%" },
-              { label: "FADE", color: "#ef4444", desc: "<52%" },
+              { label: "STRONG", color: "#10b981", desc: "≥68%" },
+              { label: "LEAN", color: "#3b82f6", desc: "58–67%" },
+              { label: "TOSS-UP", color: "#f59e0b", desc: "50–57%" },
+              { label: "FADE", color: "#ef4444", desc: "<50%" },
             ].map((t) => (
               <div key={t.label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
                 <div style={{ width: 7, height: 7, borderRadius: "50%", background: t.color }} />
@@ -547,11 +591,13 @@ export default function NRFILive() {
             ))}
           </div>
           <div style={{ fontSize: 9, color: "#334155", lineHeight: 1.7 }}>
-            <strong style={{ color: "#475569" }}>Pitcher stats:</strong> 2026 season game log from MLB Stats API (ERA, WHIP, K/9, BB/9) · Converted to first-inning hold probability via ERA/9 with K-rate bonus and walk penalty · Bayesian-blended with league average (~70%) to handle small sample sizes
+            <strong style={{ color: "#475569" }}>Pitcher stats:</strong> 2026 season game log from MLB Stats API (ERA, WHIP, K/9, BB/9) · Poisson model: P(0 runs) = e^(-λ) where λ = adjusted run expectancy per inning · 10% first-inning discount for starter freshness · K-rate, walk rate, and WHIP multipliers
             <br />
             <strong style={{ color: "#475569" }}>Team NRFI rates:</strong> Computed from actual first-inning linescore data over last 30 days ({dataInfo.gamesScanned} games scanned) · Tracks both batting NRFI (team doesn't score) and pitching NRFI (team's pitcher holds)
             <br />
-            <strong style={{ color: "#475569" }}>Park factors:</strong> Statcast run factors (2024-25 avg) · Higher PF = more run-scoring = lower NRFI probability
+            <strong style={{ color: "#475569" }}>Combination:</strong> Log-odds space blending avoids the compression problem of multiplying probabilities · Pitcher quality weighted 65%, lineup tendency 35% · Light Bayesian shrinkage (prior weight 2) preserves signal from small samples
+            <br />
+            <strong style={{ color: "#475569" }}>Park factors:</strong> Statcast run factors (2024-25 avg) · Applied as log-odds shift for stronger influence at extremes
             <br />
             <strong style={{ color: "#475569" }}>Tap any game card</strong> to see the full model breakdown for that matchup.
           </div>
